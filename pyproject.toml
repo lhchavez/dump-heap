@@ -1,0 +1,9 @@
+[project]
+name = "dump-heap"
+version = "0.1.0"
+description = "Dumps the heap of a running Python program."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyelftools>=0.31",
+]
