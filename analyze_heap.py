@@ -19,6 +19,7 @@ class HeapObject(NamedTuple):
     typename: str
     referents: set[int]
     referrers: set[int]
+    root: bool
     payload: str | None = None
 
 
@@ -41,19 +42,20 @@ def _scanheap(filename: str) -> dict[int, HeapObject]:
                 objtype_addr, objtype_len = struct.unpack("!QH", f.read(10))
                 typenames[objtype_addr] = f.read(objtype_len).decode("utf-8")
             elif record_kind == RECORD_OBJECT:
-                # !BQQL
-                addr, objtype_addr, size = struct.unpack("!QQL", f.read(20))
+                # !B?QQL
+                root, addr, objtype_addr, size = struct.unpack("!?QQL", f.read(20))
                 live_objects[addr] = HeapObject(
                     addr=addr,
                     typename=typenames[objtype_addr],
                     size=size,
                     referents=set(),
                     referrers=set(),
+                    root=root,
                 )
             elif record_kind == RECORD_OBJECT_WITH_PAYLOAD:
-                # !BQQLH{len(payload)}s
-                addr, objtype_addr, size, payload_len = struct.unpack(
-                    "!QQLH", f.read(22)
+                # !B?QQLH{len(payload)}s
+                root, addr, objtype_addr, size, payload_len = struct.unpack(
+                    "!?QQLH", f.read(22)
                 )
                 payload = f.read(payload_len).decode("utf-8", "replace")
                 live_objects[addr] = HeapObject(
@@ -63,6 +65,7 @@ def _scanheap(filename: str) -> dict[int, HeapObject]:
                     payload=payload,
                     referents=set(),
                     referrers=set(),
+                    root=root,
                 )
             elif record_kind == RECORD_REFERENTS:
                 # !BQH{len(referents)}Q

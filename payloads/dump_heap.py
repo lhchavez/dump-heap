@@ -23,7 +23,9 @@ def entrypoint(output_path: str):
 
     try:
         with open(output_path, "wb") as output_file:
-            queue: list[tuple[Any, int]] = [(o, id(o)) for o in gc.get_objects()]
+            queue: list[tuple[Any, int, bool]] = [
+                (o, id(o), True) for o in gc.get_objects()
+            ]
             x = 0
             totalsize = 0
 
@@ -37,7 +39,7 @@ def entrypoint(output_path: str):
                     )
                 x += 1
 
-                obj, addr = queue.pop()
+                obj, addr, root = queue.pop()
                 if addr in ignored_addrs:
                     # We don't want to track the objects we own.
                     continue
@@ -75,8 +77,9 @@ def entrypoint(output_path: str):
                             payload = payload[:MAX_PAYLOAD_SIZE]
                         output_file.write(
                             struct.pack(
-                                f"!BQQLH{len(payload)}s",
+                                f"!B?QQLH{len(payload)}s",
                                 RECORD_OBJECT_WITH_PAYLOAD,
+                                root,
                                 addr,
                                 objtype_addr,
                                 size,
@@ -117,8 +120,9 @@ def entrypoint(output_path: str):
                             payload = payload[:MAX_PAYLOAD_SIZE]
                         output_file.write(
                             struct.pack(
-                                f"!BQQLH{len(payload)}s",
+                                f"!B?QQLH{len(payload)}s",
                                 RECORD_OBJECT_WITH_PAYLOAD,
+                                root,
                                 addr,
                                 objtype_addr,
                                 size,
@@ -129,8 +133,9 @@ def entrypoint(output_path: str):
                     else:
                         output_file.write(
                             struct.pack(
-                                "!BQQL",
+                                "!B?QQL",
                                 RECORD_OBJECT,
+                                root,
                                 addr,
                                 objtype_addr,
                                 size,
@@ -139,8 +144,9 @@ def entrypoint(output_path: str):
                 except:  # noqa: E722
                     output_file.write(
                         struct.pack(
-                            "!BQQL",
+                            "!B?QQL",
                             RECORD_OBJECT,
+                            root,
                             addr,
                             objtype_addr,
                             size,
@@ -165,7 +171,7 @@ def entrypoint(output_path: str):
                             child_addr,
                         )
                     )
-                    queue.append((child_obj, child_addr))
+                    queue.append((child_obj, child_addr, False))
 
             output_file.write(struct.pack("!B", RECORD_DONE))
 
