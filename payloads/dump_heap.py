@@ -1,4 +1,4 @@
-def entrypoint(output_path: str) -> None:
+def __payload_entrypoint(output_path: str) -> None:
     import asyncio
     import inspect
     import logging
@@ -194,4 +194,3 @@ def entrypoint(output_path: str) -> None:
         del seen
         del seentypes
         del ignored_addrs
-        gc.collect()

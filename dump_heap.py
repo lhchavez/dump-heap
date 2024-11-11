@@ -77,18 +77,25 @@ RUN_PYTHON_PAYLOAD = (
 )
 
 PYTHON_TRAMPOLINE_TEMPLATE = """
+import gc
 import threading
 
 OUTPUT_PATH = "{output_path}"
 DONE_PATH = "{done_path}"
 
 
-def _wrapper() -> None:
+def __wrapper() -> None:
     exc: BaseException | None = None
     try:
-        entrypoint(OUTPUT_PATH)
+        __payload_entrypoint(OUTPUT_PATH)
     except BaseException as e:
         exc = e
+    finally:
+        try:
+            del globals()["__payload_entrypoint"]
+        except:  # noqa: E722
+            pass
+        gc.collect()
 
     with open(DONE_PATH, "w") as done_file:
         if exc is None:
@@ -97,7 +104,7 @@ def _wrapper() -> None:
             done_file.write(f"ERROR: {{exc}}")
 
 
-thread = threading.Thread(target=_wrapper, daemon=True)
+thread = threading.Thread(target=__wrapper, daemon=True)
 thread.start()
 """
 
@@ -394,7 +401,8 @@ def _main() -> None:
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
 
-    done_path = f"/tmp/dump-heap-done-{args.pid}-{uuid.uuid4()}"
+    run_id = str(uuid.uuid4())
+    done_path = f"/tmp/dump-heap-done-{args.pid}-{run_id}"
     with (
         open(
             os.path.join(os.path.dirname(__file__), "payloads/dump_heap.py"), "r"
@@ -410,6 +418,9 @@ def _main() -> None:
                         done_path=done_path,
                     ),
                 )
+            ).replace(
+                "__payload_entrypoint",
+                "__payload_entrypoint_" + run_id.replace("-", "_"),
             )
         )
 
@@ -500,7 +511,7 @@ def _main() -> None:
             logging.warning("waiting...")
             time.sleep(1)
     else:
-        logging.error("timed out waiting for the done file")
+        logging.error("timed out waiting for %s", done_path)
     try:
         os.remove(done_path)
     except:  # noqa: E722
