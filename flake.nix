@@ -20,6 +20,7 @@
         ruff
         ruff-lsp
         uv
+        graphviz
       ];
     };
   in
