@@ -1,4 +1,6 @@
 def entrypoint(output_path: str):
+    import asyncio
+    import inspect
     import logging
     import gc
     import struct
@@ -20,6 +22,66 @@ def entrypoint(output_path: str):
     ignored_addrs = {id(seen), id(seentypes)}
     ignored_addrs.add(id(ignored_addrs))
     logging.warning("XXX: dump_heap: collected gc")
+
+    def _get_payload(obj: Any) -> bytes | None:
+        try:
+            payload_str: str | None = None
+            payload: bytes | None = None
+            if isinstance(obj, str):
+                payload_str = obj
+            elif isinstance(obj, dict):
+                payload_entries: list[bytes] = []
+                payload_length = 0
+                for key in obj.keys():
+                    if isinstance(key, bytes):
+                        if len(key) > MAX_PAYLOAD_SIZE:
+                            key_bytes = key[:MAX_PAYLOAD_SIZE]
+                        else:
+                            key_bytes = key
+                    elif isinstance(key, str):
+                        if len(key) > MAX_PAYLOAD_SIZE:
+                            key_bytes = key[:MAX_PAYLOAD_SIZE].encode(
+                                "utf-8", "replace"
+                            )
+                        else:
+                            key_bytes = key.encode("utf-8", "replace")
+                    else:
+                        key_str = str(key)
+                        if len(key_str) > MAX_PAYLOAD_SIZE:
+                            key_bytes = key_str[:MAX_PAYLOAD_SIZE].encode(
+                                "utf-8", "replace"
+                            )
+                        else:
+                            key_bytes = key_str.encode("utf-8", "replace")
+                    payload_entries.append(key_bytes)
+                    payload_length += len(key_bytes) + 1
+                    if payload_length > MAX_PAYLOAD_SIZE:
+                        break
+                payload = b",".join(payload_entries)
+            elif isinstance(obj, asyncio.Task):
+                payload_str = obj.get_name()
+            elif inspect.ismodule(obj):
+                payload_str = obj.__name__
+            elif inspect.isclass(obj):
+                payload_str = obj.__qualname__
+            elif inspect.ismethod(obj):
+                func = obj.__func__
+                payload_str = f"{func.__qualname__} at {func.__code__.co_filename}:{func.__code__.co_firstlineno}"
+            elif inspect.isfunction(obj):
+                payload_str = f"{obj.__qualname__} at {obj.__code__.co_filename}:{obj.__code__.co_firstlineno}"
+            elif inspect.iscoroutine(obj):
+                payload_str = obj.__qualname__
+
+            if payload_str is not None and payload is None:
+                if len(payload_str) <= MAX_PAYLOAD_SIZE:
+                    payload = payload_str.encode("utf-8", "replace")
+                else:
+                    payload = payload_str[:MAX_PAYLOAD_SIZE].encode("utf-8", "replace")
+            if payload is not None and len(payload) > MAX_PAYLOAD_SIZE:
+                payload = payload[:MAX_PAYLOAD_SIZE]
+        except:  # noqa: E722
+            pass
+        return payload
 
     try:
         with open(output_path, "wb") as output_file:
@@ -67,81 +129,21 @@ def entrypoint(output_path: str):
 
                 size = sys.getsizeof(obj, 0)
                 totalsize += size
-                try:
-                    if isinstance(obj, str):
-                        if len(obj) <= MAX_PAYLOAD_SIZE:
-                            payload = obj.encode("utf-8", "replace")
-                        else:
-                            payload = obj[:MAX_PAYLOAD_SIZE].encode("utf-8", "replace")
-                        if len(payload) > MAX_PAYLOAD_SIZE:
-                            payload = payload[:MAX_PAYLOAD_SIZE]
-                        output_file.write(
-                            struct.pack(
-                                f"!B?QQLH{len(payload)}s",
-                                RECORD_OBJECT_WITH_PAYLOAD,
-                                root,
-                                addr,
-                                objtype_addr,
-                                size,
-                                len(payload),
-                                payload,
-                            )
+                payload = _get_payload(obj)
+                if payload is not None:
+                    output_file.write(
+                        struct.pack(
+                            f"!B?QQLH{len(payload)}s",
+                            RECORD_OBJECT_WITH_PAYLOAD,
+                            root,
+                            addr,
+                            objtype_addr,
+                            size,
+                            len(payload),
+                            payload,
                         )
-                    elif isinstance(obj, dict):
-                        payload_entries: list[bytes] = []
-                        payload_length = 0
-                        for key in obj.keys():
-                            if isinstance(key, bytes):
-                                if len(key) > MAX_PAYLOAD_SIZE:
-                                    key_bytes = key[:MAX_PAYLOAD_SIZE]
-                                else:
-                                    key_bytes = key
-                            elif isinstance(key, str):
-                                if len(key) > MAX_PAYLOAD_SIZE:
-                                    key_bytes = key[:MAX_PAYLOAD_SIZE].encode(
-                                        "utf-8", "replace"
-                                    )
-                                else:
-                                    key_bytes = key.encode("utf-8", "replace")
-                            else:
-                                key_str = str(key)
-                                if len(key_str) > MAX_PAYLOAD_SIZE:
-                                    key_bytes = key_str[:MAX_PAYLOAD_SIZE].encode(
-                                        "utf-8", "replace"
-                                    )
-                                else:
-                                    key_bytes = key_str.encode("utf-8", "replace")
-                            payload_entries.append(key_bytes)
-                            payload_length += len(key_bytes) + 1
-                            if payload_length > MAX_PAYLOAD_SIZE:
-                                break
-                        payload = b",".join(payload_entries)
-                        if len(payload) > MAX_PAYLOAD_SIZE:
-                            payload = payload[:MAX_PAYLOAD_SIZE]
-                        output_file.write(
-                            struct.pack(
-                                f"!B?QQLH{len(payload)}s",
-                                RECORD_OBJECT_WITH_PAYLOAD,
-                                root,
-                                addr,
-                                objtype_addr,
-                                size,
-                                len(payload),
-                                payload,
-                            )
-                        )
-                    else:
-                        output_file.write(
-                            struct.pack(
-                                "!B?QQL",
-                                RECORD_OBJECT,
-                                root,
-                                addr,
-                                objtype_addr,
-                                size,
-                            )
-                        )
-                except:  # noqa: E722
+                    )
+                else:
                     output_file.write(
                         struct.pack(
                             "!B?QQL",
