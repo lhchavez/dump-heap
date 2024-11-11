@@ -183,8 +183,8 @@ def _main() -> None:
             addresses = set(int(x, 16) for x in filter_exprs if not x.startswith("!"))
         print("digraph heap {")
         print("  rankdir=TB;")
-        print("  node [shape=box];")
-        print("  edge [dir=back];")
+        print('  node [shape=box];')
+        print('  edge [dir=back];')
         for obj in live_objects.values():
             if addresses is not None:
                 if obj.addr not in addresses or obj.addr in excluded_addresses:
@@ -198,14 +198,26 @@ def _main() -> None:
                 continue
             seen.add(obj.addr)
             ranks[depth].append(obj.addr)
+
+            style = ""
             if excluded_addresses is not None and obj.addr in excluded_addresses:
-                print(
-                    f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}",style=filled,fillcolor=gray];'
-                )
-                continue
+                style = ",style=filled,fillcolor=gray"
+            elif depth == 0:
+                style = ",style=filled,fillcolor=red"
+            elif args.highlight and args.highlight in obj.typename:
+                style = ",style=filled,fillcolor=yellow"
+            payload = ""
+            if obj.payload is not None:
+                if len(payload) <= 32:
+                    payload = f"\\n{obj.payload}"
+                else:
+                    payload = f"\\n{obj.payload[:31]}…"
             print(
-                f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}"{",style=filled,fillcolor=red" if depth == 0 else ""}];'
+                f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}{payload}"{style}];'
             )
+            if excluded_addresses is not None and obj.addr in excluded_addresses:
+                continue
+
             if depth >= args.max_depth:
                 if obj.referrers:
                     print(f'  x{obj.addr:x}_parents [label="...",shape=circle];')
@@ -249,8 +261,13 @@ def _main() -> None:
     parser_graph.add_argument(
         "--filter",
         type=str,
-        help="Filter entries by typename.",
+        help="Filter entries by typename or address",
         required=True,
+    )
+    parser_graph.add_argument(
+        "--highlight",
+        type=str,
+        help="Highlight entries by typename.",
     )
     parser_graph.set_defaults(func=_graph)
     args = parser.parse_args()
