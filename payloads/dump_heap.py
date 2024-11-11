@@ -1,4 +1,4 @@
-def entrypoint(output_path: str):
+def entrypoint(output_path: str) -> None:
     import asyncio
     import inspect
     import logging
@@ -17,8 +17,8 @@ def entrypoint(output_path: str):
     logging.warning("XXX: dump_heap: writing report to %r", output_path)
     logging.warning("XXX: dump_heap: collecting gc")
     gc.collect()
-    seen = set()
-    seentypes = set()
+    seen: set[int] = set()
+    seentypes: set[type] = set()
     ignored_addrs = {id(seen), id(seentypes)}
     ignored_addrs.add(id(ignored_addrs))
     logging.warning("XXX: dump_heap: collected gc")
@@ -58,6 +58,7 @@ def entrypoint(output_path: str):
                     if payload_length > MAX_PAYLOAD_SIZE:
                         break
                 payload = b",".join(payload_entries)
+                del payload_entries
             elif isinstance(obj, asyncio.Task):
                 payload_str = obj.get_name()
             elif inspect.ismodule(obj):
@@ -77,6 +78,7 @@ def entrypoint(output_path: str):
                     payload = payload_str.encode("utf-8", "replace")
                 else:
                     payload = payload_str[:MAX_PAYLOAD_SIZE].encode("utf-8", "replace")
+                del payload_str
             if payload is not None and len(payload) > MAX_PAYLOAD_SIZE:
                 payload = payload[:MAX_PAYLOAD_SIZE]
         except:  # noqa: E722
@@ -174,6 +176,7 @@ def entrypoint(output_path: str):
                         )
                     )
                     queue.append((child_obj, child_addr, False))
+                del referents
 
             output_file.write(struct.pack("!B", RECORD_DONE))
 
@@ -183,6 +186,7 @@ def entrypoint(output_path: str):
                 len(queue),
                 totalsize / 1024.0 / 1024.0,
             )
+            del queue
     except:
         logging.exception("XXX: dump_heap: failed to collect")
         raise
@@ -190,3 +194,4 @@ def entrypoint(output_path: str):
         del seen
         del seentypes
         del ignored_addrs
+        gc.collect()
