@@ -148,6 +148,7 @@ def _main() -> None:
     parser_top.add_argument(
         "--top-allocations",
         default=50,
+        type=int,
         help="How many of the biggest allocations to show",
     )
     parser_top.add_argument(
@@ -182,9 +183,12 @@ def _main() -> None:
             )
             addresses = set(int(x, 16) for x in filter_exprs if not x.startswith("!"))
         print("digraph heap {")
+        print(
+            f'  label="Heap visualization of {args.heap_dump}, generated with https://github.com/lhchavez/dump-heap";'
+        )
         print("  rankdir=TB;")
-        print('  node [shape=box];')
-        print('  edge [dir=back];')
+        print("  node [shape=box];")
+        print("  edge [dir=back];")
         for obj in live_objects.values():
             if addresses is not None:
                 if obj.addr not in addresses or obj.addr in excluded_addresses:
@@ -224,16 +228,20 @@ def _main() -> None:
                     print(f"  x{obj.addr:x} -> x{obj.addr:x}_parents [style=dotted];")
                 continue
             if obj.typename not in {
-                "builtins.int",
                 "builtins.type",
                 "builtins.function",
                 "builtins.module",
             }:
                 for addr in obj.referrers:
-                    print(
-                        f'  x{obj.addr:x} -> x{addr:x}{" [style=dashed]" if addr in seen else ""};'
-                    )
-                    queue.append((depth + 1, all_objects[addr]))
+                    referrer_obj = all_objects[addr]
+                    style = ""
+                    if addr in seen:
+                        style = " [style=dashed]"
+                    elif len(referrer_obj.referents) == 1:
+                        # Marking any single references with bold arrows.
+                        style = " [style=bold]"
+                    print(f"  x{obj.addr:x} -> x{addr:x}{style};")
+                    queue.append((depth + 1, referrer_obj))
         for rank in range(args.max_depth + 1):
             if rank not in ranks:
                 break
