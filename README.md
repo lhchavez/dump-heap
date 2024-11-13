@@ -18,35 +18,48 @@ Cursed examples we have seen are leaked
 [`asyncio.Task`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task)
 and dangling async generators.
 
-With this tool, you can take two heap snapshots at different points in time and
-analyze the common objects between them (which are likely to be leaked).
+With this tool, you can take three heap snapshots at different points in time
+and analyze the objects among them that are likely to be leaked.
 
 To take a snapshot, run this command in the same machine / container as the
 target process:
 
 ```shell
-~/debug-heap$ uv run sudo python dump_heap.py --output-path=/tmp/heap.bin $(pidof python) && gzip /tmp/heap.bin
+~/debug-heap$ uv run sudo python dump_heap.py \
+    --output-path=/tmp/heap.bin \
+    $(pidof python) && \
+  gzip /tmp/heap.bin
 ```
 
-Save the heap somewhere, wait several minutes / hours, and run it again.
+Save the heap somewhere, wait several minutes / hours, and run it again. Then
+wait several minutes / hours and run it a third time. The first snapshot will
+serve as a baseline of all long-lived objects that are expected to be present
+in all snapshots (and therefore should be excluded from leak analysis). The
+second snapshot will be the one we want to analyze for leaks, and the third one
+will serve to analyze what objects have survived (and therefore should be
+included in the leak analysis). In set notation, potentially leaked objects are
+those present in $`(S_2 \cap S_3) \setminus S_1`$.
 
-To get the largest objects that are common between both snapshots (meaning that
-they are still live, since the snapshotting process forces a garbage-collection
-pass):
+To get the largest potentially leaked objects among snapshots:
 
 ```shell
-~/debug-heap$ uv run analyze_heap.py --previous-heap-dump ~/heap.before.bin.gz top --show-parent --max-depth=30 ~/heap.after.bin.gz | less
+~/debug-heap$ uv run analyze_heap.py \
+    --remove-heap-dump ~/heap.1.bin.gz \
+    --intersect-heap-dump ~/heap.3.bin.gz \
+    top \
+    --top-allocations=1000 \
+    ~/heap.2.bin.gz
 ```
 
-This view might be sufficient to identify what's holding a (transitive)
-reference to the potentially-leaked object. But this view is not always easy to
-parse, so if you want to visualize that in a nice
-[Graphviz](https://graphviz.org/)-produced svg, you can grab the address of an
-object you want to focus on (say, `0x00005d4bbffe2100`), a few objects you want
-to exclude (because they have just too many references,
-`!0x7967b8ed0fe0,!0x7967eff3ad80,!0x7967e7cca000`, for example), and specify an
-optional type to highlight (`asyncio.Task` is useful in async contexts, since
-task leaks are surprising and often contribute a lot):
+You can add the `--show-parents` flag to identify what's holding a (transitive)
+reference to the potentially-leaked object, but that is very noisy. If you want
+to visualize that in a nice [Graphviz](https://graphviz.org/)-produced svg, you
+can grab the address of an object you want to focus on (say,
+`0x00005d4bbffe2100`), a few objects you want to exclude (because they have
+just too many references, `!0x7967b8ed0fe0,!0x7967eff3ad80,!0x7967e7cca000`,
+for example), and specify an optional type to highlight (`asyncio.Task` is
+useful in async contexts, since task leaks are surprising and often contribute
+a lot):
 
 ```shell
 ~/debug-heap$ uv run analyze_heap.py \
@@ -55,7 +68,7 @@ task leaks are surprising and often contribute a lot):
     --highlight='asyncio.Task' \
     --max-depth=30 \
     ~/heap.after.bin.gz | \
-dot -o ~/graph.svg -Tsvg
+  dot -o ~/graph.svg -Tsvg
 ```
 
 Hopefully that will shed some light to why the leak is happening and how to fix

@@ -29,7 +29,7 @@ class HeapObject:
     payload: str | None = None
 
 
-def _scanheap(filename: str) -> dict[int, HeapObject]:
+def _scanheap(filename: str, populate_referrers: bool = True) -> dict[int, HeapObject]:
     typenames: dict[int, str] = {}
     live_objects: dict[int, HeapObject] = {}
     logging.info("%s: scanning live objects...", filename)
@@ -87,9 +87,10 @@ def _scanheap(filename: str) -> dict[int, HeapObject]:
     logging.info("%s: %d live objects scanned", filename, len(live_objects))
     # Now that we have the full graph, fill in the referrers, which is the
     # transpose graph of the referents.
-    for obj in live_objects.values():
-        for referent in obj.referents:
-            live_objects[referent].referrers.add(obj.addr)
+    if populate_referrers:
+        for obj in live_objects.values():
+            for referent in obj.referents:
+                live_objects[referent].referrers.add(obj.addr)
     return live_objects
 
 
@@ -97,9 +98,14 @@ def _main() -> None:
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--previous-heap-dump",
+        "--remove-heap-dump",
         default=None,
-        help="A previous heap dump. Only live objects that also appear in the previous heap dump will be considered.",
+        help="A previous heap dump. Only live objects that do not appear in the previous heap dump will be considered.",
+    )
+    parser.add_argument(
+        "--intersect-heap-dump",
+        default=None,
+        help="A future heap dump. Only live objects that also appear in the future heap dump will be considered.",
     )
     subparsers = parser.add_subparsers()
 
@@ -222,15 +228,22 @@ def _main() -> None:
             if excluded_addresses is not None and obj.addr in excluded_addresses:
                 continue
 
+            if not obj.referrers:
+                continue
             if depth >= args.max_depth:
-                if obj.referrers:
-                    print(f'  x{obj.addr:x}_parents [label="...",shape=circle];')
-                    print(f"  x{obj.addr:x} -> x{obj.addr:x}_parents [style=dotted];")
+                print(
+                    f'  x{obj.addr:x}_parents [label="...",shape=circle,style=filled,fillcolor=gray];'
+                )
+                print(f"  x{obj.addr:x} -> x{obj.addr:x}_parents [style=dotted];")
+                continue
+            if obj.referrers and len(obj.referrers) >= args.max_breadth:
+                print(
+                    f'  x{obj.addr:x}_parents [label="...{len(obj.referrers)}...",shape=oval,style=filled,fillcolor=gray];'
+                )
+                print(f"  x{obj.addr:x} -> x{obj.addr:x}_parents [style=dotted];")
                 continue
             if obj.typename not in {
-                "builtins.type",
                 "builtins.function",
-                "builtins.module",
             }:
                 for addr in obj.referrers:
                     referrer_obj = all_objects[addr]
@@ -265,6 +278,12 @@ def _main() -> None:
         type=int,
         help="The maximum depth to show when traversing parents / children.",
     )
+    parser_graph.add_argument(
+        "--max-breadth",
+        default=20,
+        type=int,
+        help="The maximum number of nodes to expand when traversing parents / children.",
+    )
     parser_graph.add_argument("heap_dump", metavar="heap-dump")
     parser_graph.add_argument(
         "--filter",
@@ -280,20 +299,33 @@ def _main() -> None:
     parser_graph.set_defaults(func=_graph)
     args = parser.parse_args()
 
-    live_objects = _scanheap(args.heap_dump)
-    all_objects = copy.copy(live_objects)
+    all_objects = _scanheap(args.heap_dump)
+    live_objects = all_objects
 
-    if args.previous_heap_dump is not None:
-        previous_objects = _scanheap(args.previous_heap_dump)
+    if args.intersect_heap_dump is not None:
+        intersect_objects = _scanheap(
+            args.intersect_heap_dump, populate_referrers=False
+        )
         # Keep all objects that have survived between the heap dumps.
-        live_objects: dict[int, HeapObjects] = {}
-        for addr in set(all_objects.keys()) & set(previous_objects.keys()):
-            previous_obj = previous_objects[addr]
-            live_obj = all_objects[addr]
+        previous_live_objects = copy.copy(live_objects)
+        live_objects = {}
+        for addr, live_obj in previous_live_objects.items():
+            if addr not in intersect_objects:
+                continue
+            intersect_obj = intersect_objects[addr]
             if (
-                previous_obj.size != live_obj.size
-                or previous_obj.typename != live_obj.typename
+                intersect_obj.size != live_obj.size
+                or intersect_obj.typename != live_obj.typename
             ):
+                continue
+            live_objects[addr] = live_obj
+    if args.remove_heap_dump is not None:
+        remove_objects = _scanheap(args.remove_heap_dump, populate_referrers=False)
+        # Remove any objects present in the other heap dump.
+        previous_live_objects = copy.copy(live_objects)
+        live_objects = {}
+        for addr, live_obj in previous_live_objects.items():
+            if addr in remove_objects:
                 continue
             live_objects[addr] = live_obj
 
