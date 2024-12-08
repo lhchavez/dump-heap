@@ -11,3 +11,6 @@ wheels/
 
 # Nix stuff
 .direnv/
+
+# Added by cargo
+/target/

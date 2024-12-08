@@ -32,80 +32,8 @@ PAGE_SIZE = 4096
 SYS_MMAP = 9
 SYS_MUNMAP = 11
 
-# https://godbolt.org/#z:OYLghAFBqd5QCxAYwPYBMCmBRdBLAF1QCcAaPECAMzwBtMA7AQwFtMQByARg9KtQYEAysib0QXACx8BBAKoBnTAAUAHpwAMvAFYTStJg1DIApACYAQuYukl9ZATwDKjdAGFUtAK4sGIM2akrgAyeAyYAHI%2BAEaYxP4A7KQADqgKhE4MHt6%2B/oGp6Y4CoeFRLLHxZkl2mA6ZQgRMxATZPn4Btpj2RQwNTQQlkTFxibaNza25HQrjA2FD5SNVAJS2qF7EyOwcBACeyZhYVADUAG6oeOjHAFQQ1/wHDMsQaAwzx8gITTekHwLvn2%2B12WJgAzFYNABBPYHI5nC5XO5UZC0NKYZ7nS43EHgkxQmGHTAnMIEY53ZS7ADiAElgn0CJgAPrYN4bdEQHEQ6H7QknTGI64Uml0xoMxkAJS6mCYSmeJM5eO5sKJxxJZMFu3FXgYjKEeBYyXoADE6Oz%2BT8/m9SYDiNiwVzFYzGUwCARiHhol4xYyoAwSJgCBsniCoebiNrGcldgQEAJqKhHscHoxfsjUUokyi0b8hbT6UyWQo2cdcyKXQXWcRMDmqXnRUzJfQZZgS7Wy2LG9KlDWtTq9QbjabW73dfrDZgTfRlscTAkuccFx8vrbki6ECYAKxWDcAERnoL35jMAHoCAbj2FtLUCAA6KNH%2B2KxdL74sDCYTfbw8HmcBYgP3EoWfNUqyLWhSTBPcAFouEfIDFzVYA6H3PcNDgyFn3Ne4UKTBNGCgV4AWXbFVxjX43ywBUoSfBCTmoFDILJCB%2BWBGDlmnWd52fRdgFQIhjnQAQP0AjDF1nHcaIXJDaBw0t82ZStMA5dDn1ArxwNkzUI37cdJyUqhfhef5rWI4FSIQKjRIXOT6wlKVm2gOhLMkzN030yzBPCEAXKdGUWCdeEDEcehVQYWh5jJFznyPElQU3NwGAfeDuOObzku4kBfzMJgjwgNTwJDKzjmchIdw4VZaE4DdeD8DgtFIVBODcaxrGOBR1k2FtzFBHhSAITRytWABrEBQVBG8xsmqbpoANn0ThJBqgaGs4XgFBADQ%2BoG1Y4FgJA0ANU0yAoIzDvoeIUUMYBGTdbUhr4OgGWIdaIGiZbojCJpdk4XqPuYYhdgAeWiK8HGWg62EEQGwu%2BureCwT1gDcMRaHW7h4cwFgrvEOHSHwKs6lOTA0fqzBVFqL1tl6kkumW8LomIL6PCwZa3X1H7eCJ4hojRHdMexsJQDh1YqAMYAFAANTwTAAHdAceDmZEEEQxHYKQlfkJQ1GW3QuH0K6UBayx9A9dbIFWBMejRqDAYAL14VAufdLAzY5TpukyFwGHcTw2gkOaQnmMoKgkTaCgyARJj8Lg5vDnpBmDkYuE2mo6gEPoJl93IY/d696lmBPhniZOxn6KP/dL5pC8WYuNFWdqNi2CQKqqpbccajhjlUAAOGaoJmyQPgMIwyVuhghunCBcEIEhfx65ZeH64XhtG8bpvXya5sqjhFtIWr6o7taNq24XSF2xAQHWAhki9chKAO5IjoiVhth7vuB6Hq7R/DceF6CfAiDOz0PwZWohxDqxAZrFQ6hca61IDLRmyQOYtw4NVPey0O6Ay9DfUkqAThv37oPS6I8IBjwnmSDwZ04hzy4H/JeWh2KkBGmNCaG917zR3m3A%2Bq1bDH3oYNDhZguEOx4fwxhXN0jOEkEAA
-#
-# typedef void *(*fopen)(const char *, const char *);
-# typedef void (*fclose)(void *);
-# typedef int (*PyGILState_Ensure)();
-# typedef void (*PyGILState_Release)(int);
-# typedef int (*PyRun_SimpleFile)(void *, const char *);
-#
-# __attribute__((noreturn))
-# void run_python(fopen fopen, fclose fclose, PyGILState_Ensure PyGILState_Ensure, PyGILState_Release PyGILState_Release, PyRun_SimpleFile PyRun_SimpleFile) {
-#     char path[] = "/tmp/inject.py";
-#     char mode[] = "r";
-#     int result = -1;
-#     int gil = 0;
-#     void *f = fopen((const char *)path, mode);
-#
-#     if (f == ((void*)-1)) {
-#         goto done;
-#     }
-#     gil = PyGILState_Ensure();
-#     result = PyRun_SimpleFile(f, (const char *)path);
-#     PyGILState_Release(gil);
-#
-#     fclose(f);
-# done:
-#     __asm__ volatile inline (
-#         "int3\n"
-#         :
-#         : "a"(result)
-#     );
-# }
-RUN_PYTHON_PAYLOAD = (
-    # Add a nop sled at the beginning just in case.
-    b"\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
-    b"\x55\x41\x57\x41\x56\x41\x55\x41\x54\x53\x48\x83\xec\x18\x4d\x89"
-    b"\xc7\x49\x89\xce\x49\x89\xd5\x48\x89\xf3\x48\x89\xf8\x48\xb9\x6a"
-    b"\x65\x63\x74\x2e\x70\x79\x00\x48\x8d\x7c\x24\x08\x48\x89\x4f\x07"
-    b"\x48\xb9\x2f\x74\x6d\x70\x2f\x69\x6e\x6a\x48\x89\x0f\x48\x8d\x74"
-    b"\x24\x06\x66\xc7\x06\x72\x00\xff\xd0\x48\x83\xf8\xff\x74\x23\x49"
-    b"\x89\xc4\x41\xff\xd5\x41\x89\xc5\x48\x8d\x74\x24\x08\x4c\x89\xe7"
-    b"\x41\xff\xd7\x89\xc5\x44\x89\xef\x41\xff\xd6\x4c\x89\xe7\xff\xd3"
-    b"\xeb\x03\x6a\xff\x5d\x89\xe8\xcc"
-)
 
 PYTHON_TRAMPOLINE_TEMPLATE = """
-import gc
-import threading
-
-OUTPUT_PATH = "{output_path}"
-DONE_PATH = "{done_path}"
-
-
-def __wrapper() -> None:
-    exc: BaseException | None = None
-    try:
-        __payload_entrypoint(OUTPUT_PATH)
-    except BaseException as e:
-        exc = e
-    finally:
-        try:
-            del globals()["__payload_entrypoint"]
-        except:  # noqa: E722
-            pass
-        gc.collect()
-
-    with open(DONE_PATH, "w") as done_file:
-        if exc is None:
-            done_file.write("SUCCESS")
-        else:
-            done_file.write(f"ERROR: {{exc}}")
-
-
-thread = threading.Thread(target=__wrapper, daemon=True)
-thread.start()
 """
 
 
