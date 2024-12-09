@@ -25,12 +25,14 @@ To take a snapshot, run these commands in the same machine / container as the
 target process:
 
 ```shell
-~$ curl -sSL https://github.com/lhchavez/dump-heap/releases/download/v0.1.0/dump-heap -o dump-heap
-~$ chmod +x dump-heap
-~$ sudo ./dump-heap \
-    --output=/tmp/heap.bin \
-    $(pidof python) && \
-  gzip /tmp/heap.bin
+curl -sSL \
+  https://github.com/lhchavez/dump-heap/releases/download/v0.1.0/dump-heap \
+  -o dump-heap && \
+chmod +x dump-heap && \
+sudo ./dump-heap \
+  --output=/tmp/heap.bin \
+  $(pidof python) && \
+gzip /tmp/heap.bin
 ```
 
 Save the heap somewhere, wait several minutes / hours, and run it again. Then
@@ -90,7 +92,7 @@ void *payload_addr = mmap(
   PROT_READ|PROT_WRITE|PROT_EXEC,
   MAP_PRIVATE|MAP_ANONYMOUS,
   -1 // fd,
-  0 // address
+  0 // offset
 );
 if (payload_addr == MAP_FAILED) {
   return -1;
