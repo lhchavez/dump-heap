@@ -28,7 +28,7 @@ jobs:
           target: x86_64-unknown-linux-musl
       - name: Build
         run: |
-          cargo build --release cargo --target=x86_64-unknown-linux-musl
+          cargo build --release --target=x86_64-unknown-linux-musl
       - name: Upload Release Asset
         id: upload_release_asset
         uses: actions/upload-release-asset@v1
