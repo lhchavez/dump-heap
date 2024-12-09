@@ -21,12 +21,14 @@ and dangling async generators.
 With this tool, you can take three heap snapshots at different points in time
 and analyze the objects among them that are likely to be leaked.
 
-To take a snapshot, run this command in the same machine / container as the
+To take a snapshot, run these commands in the same machine / container as the
 target process:
 
 ```shell
-~/debug-heap$ uv run sudo python dump_heap.py \
-    --output-path=/tmp/heap.bin \
+~$ curl -sSL https://github.com/lhchavez/dump-heap/releases/download/v0.1.0/dump-heap -o dump-heap
+~$ chmod +x dump-heap
+~$ sudo ./dump-heap \
+    --output=/tmp/heap.bin \
     $(pidof python) && \
   gzip /tmp/heap.bin
 ```
@@ -95,15 +97,11 @@ if (payload_addr == MAP_FAILED) {
 }
 memcpy(payload_addr, RUN_PYTHON_PAYLOAD, sizeof(RUN_PYTHON_PAYLOAD));
 typedef int (*)(
-  typeof(fopen),
-  typeof(fclose),
   typeof(PyGILState_Ensure),
   typeof(PyGILState_Release),
   typeof(PyRun_SimpleFile)
 ) run_python;
 int ret = ((run_python)payload_addr)(
-  fopen,
-  fclose,
   PyGILState_Ensure,
   PyGILState_Release,
   PyRun_SimpleFile
