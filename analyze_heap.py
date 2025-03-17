@@ -3,15 +3,10 @@ import collections
 import dataclasses
 import copy
 import gzip
+import io
 import logging
-import struct
-from typing import NamedTuple
 
-RECORD_DONE = 0
-RECORD_TYPE = 1
-RECORD_OBJECT = 2
-RECORD_OBJECT_WITH_PAYLOAD = 3
-RECORD_REFERENTS = 4
+import msgpack
 
 
 @dataclasses.dataclass(order=True)
@@ -33,55 +28,35 @@ def _scanheap(filename: str, populate_referrers: bool = True) -> dict[int, HeapO
     typenames: dict[int, str] = {}
     live_objects: dict[int, HeapObject] = {}
     logging.info("%s: scanning live objects...", filename)
+    file: io.IOBase
     if filename.endswith(".gz"):
         file = gzip.open(filename, "rb")
     else:
         file = open(filename, "rb")
     with file as f:
-        while True:
-            (record_kind,) = struct.unpack("B", f.read(1))
-            if record_kind == RECORD_DONE:
-                # !B
+        for record in msgpack.Unpacker(f):
+            if record["t"] == "done":
                 break
-            elif record_kind == RECORD_TYPE:
-                # !BQH{len(typename)}s
-                objtype_addr, objtype_len = struct.unpack("!QH", f.read(10))
-                typenames[objtype_addr] = f.read(objtype_len).decode("utf-8")
-            elif record_kind == RECORD_OBJECT:
-                # !B?QQL
-                root, addr, objtype_addr, size = struct.unpack("!?QQL", f.read(21))
-                live_objects[addr] = HeapObject(
-                    addr=addr,
-                    typename=typenames[objtype_addr],
-                    size=size,
-                    root=root,
-                )
-            elif record_kind == RECORD_OBJECT_WITH_PAYLOAD:
-                # !B?QQLH{len(payload)}s
-                root, addr, objtype_addr, size, payload_len = struct.unpack(
-                    "!?QQLH", f.read(23)
-                )
-                payload = f.read(payload_len).decode("utf-8", "replace")
-                live_objects[addr] = HeapObject(
-                    addr=addr,
-                    typename=typenames[objtype_addr],
-                    size=size,
+            elif record["t"] == "type":
+                typenames[record["objtype_addr"]] = record["typename"]
+            elif record["t"] == "object":
+                payload_bytes = record.get("payload", None)
+                payload: str | None = None
+                if payload_bytes is not None:
+                    payload = payload_bytes.decode("utf-8", "replace")
+                live_objects[record["addr"]] = HeapObject(
+                    addr=record["addr"],
+                    typename=typenames[record["objtype_addr"]],
+                    size=record["size"],
+                    root=record["root"],
                     payload=payload,
-                    root=root,
                 )
-            elif record_kind == RECORD_REFERENTS:
-                # !BQH{len(referents)}Q
-                addr, referents_len = struct.unpack("!QH", f.read(10))
-                referents = live_objects[addr].referents
+            elif record["t"] == "referents":
+                referents = live_objects[record["addr"]].referents
                 referents.clear()
-                referents.update(
-                    struct.unpack(
-                        f"{referents_len}Q",
-                        f.read(8 * referents_len),
-                    )
-                )
+                referents.update(record["child_addrs"])
             else:
-                logging.fatal("unknown record kind %d", record_kind)
+                logging.fatal("unknown record kind %d", record["t"])
         else:
             logging.warning("incomplete file")
     logging.info("%s: %d live objects scanned", filename, len(live_objects))
@@ -180,8 +155,8 @@ def _main() -> None:
         queue: list[tuple[int, HeapObject]] = []
         seen: set[int] = set()
         ranks = collections.defaultdict[int, list[int]](list)
-        addresses: Optional[set[int]] = None
-        excluded_addresses: Optional[set[int]] = None
+        addresses: set[int] | None = None
+        excluded_addresses: set[int] | None = None
         if "0x" in args.filter:
             filter_exprs = args.filter.split(",")
             excluded_addresses = set(
@@ -196,7 +171,7 @@ def _main() -> None:
         print("  node [shape=box];")
         print("  edge [dir=back];")
         for obj in live_objects.values():
-            if addresses is not None:
+            if addresses is not None and excluded_addresses is not None:
                 if obj.addr not in addresses or obj.addr in excluded_addresses:
                     continue
             elif args.filter not in obj.typename:

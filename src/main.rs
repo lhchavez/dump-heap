@@ -560,7 +560,7 @@ mod tests {
             .arg("-i")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .spawn()
             .expect("Failed to execute Python");
 
@@ -587,10 +587,12 @@ mod tests {
         let read = stdout.read(&mut buf).expect("Failed to read stdout");
         assert_eq!(&buf[..read], b"1\n");
 
-        let result = Command::new("python")
+        let result = Command::new("uv")
+            .arg("run")
             .arg("analyze_heap.py")
             .arg("top")
             .arg(output_path)
+            .stderr(Stdio::inherit())
             .output()
             .expect("Failed to execute analyze_heap.py");
         assert!(result.status.success());
@@ -603,7 +605,7 @@ mod tests {
             assert!(
                 false,
                 "{:#?} did not contain {:#?}",
-                result.stdout, expected
+                String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(expected),
             );
         }
     }

@@ -5,7 +5,11 @@ description = "Dumps the heap of a running Python program."
 readme = "README.md"
 requires-python = ">=3.12"
 
+[dependencies]
+msgpack = ">=1.1.0"
+
 [dependency-groups]
 dev = [
     "mypy>=1.13.0",
+    "msgpack-types>=0.3.0",
 ]

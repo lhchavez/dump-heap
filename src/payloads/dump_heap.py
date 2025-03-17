@@ -1,5 +1,6 @@
 def __payload_entrypoint(output_path: str) -> None:
     import asyncio
+    import asyncio.events
     import inspect
     import logging
     import gc
@@ -8,20 +9,171 @@ def __payload_entrypoint(output_path: str) -> None:
     from typing import Any
 
     MAX_PAYLOAD_SIZE = 128
-    RECORD_DONE = 0
-    RECORD_TYPE = 1
-    RECORD_OBJECT = 2
-    RECORD_OBJECT_WITH_PAYLOAD = 3
-    RECORD_REFERENTS = 4
 
     logging.warning("XXX: dump_heap: writing report to %r", output_path)
     logging.warning("XXX: dump_heap: collecting gc")
     gc.collect()
+    gc.collect(1)
+    gc.collect(2)
     seen: set[int] = set()
     seentypes: set[type] = set()
     ignored_addrs = {id(seen), id(seentypes)}
     ignored_addrs.add(id(ignored_addrs))
     logging.warning("XXX: dump_heap: collected gc")
+
+    # Handrolled msgpack packer.
+    # See https://github.com/msgpack/msgpack/blob/master/spec.md for reference.
+    def _pack_map(map_len: int) -> bytes:
+        if map_len < 0x10:
+            return struct.pack("!B", 0x80 | map_len)
+        if map_len < 0x10000:
+            return struct.pack("!BH", 0xDE, map_len)
+        if map_len < 0x100000000:
+            return struct.pack("!BI", 0xDF, map_len)
+        raise ValueError("too big of a map")
+
+    def _pack_array(array_len: int) -> bytes:
+        if array_len < 0x10:
+            return struct.pack("!B", 0x90 | array_len)
+        if array_len < 0x10000:
+            return struct.pack("!BH", 0xDC, array_len)
+        if array_len < 0x100000000:
+            return struct.pack("!BI", 0xDD, array_len)
+        raise ValueError("too big of an array")
+
+    def _pack_int(value: int) -> bytes:
+        if value < 0:
+            raise ValueError("negative integers not supported")
+        if value < 0x80:
+            return struct.pack("!B", 0x00 | value)
+        if value < 0x100:
+            return struct.pack("!BB", 0xCC, value)
+        if value < 0x10000:
+            return struct.pack("!BH", 0xCD, value)
+        if value < 0x100000000:
+            return struct.pack("!BI", 0xCE, value)
+        if value < 0x10000000000000000:
+            return struct.pack("!BQ", 0xCF, value)
+        raise ValueError("too big of a number")
+
+    def _pack_str(value: bytes) -> bytes:
+        value_len = len(value)
+        if value_len < 0x20:
+            return struct.pack(f"!B{value_len}s", 0xA0 | value_len, value)
+        if value_len < 0x100:
+            return struct.pack(f"!BB{value_len}s", 0xD9, value_len, value)
+        if value_len < 0x10000:
+            return struct.pack(f"!BH{value_len}s", 0xDA, value_len, value)
+        if value_len < 0x100000000:
+            return struct.pack(f"!BI{value_len}s", 0xDB, value_len, value)
+        raise ValueError("too big of a string")
+
+    def _pack_bin(value: bytes) -> bytes:
+        value_len = len(value)
+        if value_len < 0x100:
+            return struct.pack(f"!BB{value_len}s", 0xC4, value_len, value)
+        if value_len < 0x10000:
+            return struct.pack(f"!BH{value_len}s", 0xC5, value_len, value)
+        if value_len < 0x100000000:
+            return struct.pack(f"!BI{value_len}s", 0xC6, value_len, value)
+        raise ValueError("too big of a bytes")
+
+    def _pack_bool(value: bool) -> bytes:
+        if value:
+            return b"\xc3"
+        return b"\xc2"
+
+    def _pack_done() -> bytes:
+        return b"".join(
+            (
+                _pack_map(1),
+                #
+                _pack_str(b"t"),
+                _pack_str(b"done"),
+            )
+        )
+
+    def _pack_type(objtype_addr: int, typename: bytes) -> bytes:
+        return b"".join(
+            (
+                _pack_map(3),
+                #
+                _pack_str(b"t"),
+                _pack_str(b"type"),
+                #
+                _pack_str(b"objtype_addr"),
+                _pack_int(objtype_addr),
+                #
+                _pack_str(b"typename"),
+                _pack_str(typename),
+            )
+        )
+
+    def _pack_object(
+        *, root: bool, addr: int, objtype_addr: int, size: int, payload: bytes | None
+    ) -> bytes:
+        if payload:
+            return b"".join(
+                (
+                    _pack_map(6),
+                    #
+                    _pack_str(b"t"),
+                    _pack_str(b"object"),
+                    #
+                    _pack_str(b"root"),
+                    _pack_bool(root),
+                    #
+                    _pack_str(b"objtype_addr"),
+                    _pack_int(objtype_addr),
+                    #
+                    _pack_str(b"addr"),
+                    _pack_int(addr),
+                    #
+                    _pack_str(b"size"),
+                    _pack_int(size),
+                    # The payload is not guaranteed to be UTF-8.
+                    _pack_str(b"payload"),
+                    _pack_bin(payload),
+                )
+            )
+        else:
+            return b"".join(
+                (
+                    _pack_map(5),
+                    #
+                    _pack_str(b"t"),
+                    _pack_str(b"object"),
+                    #
+                    _pack_str(b"root"),
+                    _pack_bool(root),
+                    #
+                    _pack_str(b"objtype_addr"),
+                    _pack_int(objtype_addr),
+                    #
+                    _pack_str(b"addr"),
+                    _pack_int(addr),
+                    #
+                    _pack_str(b"size"),
+                    _pack_int(size),
+                )
+            )
+
+    def _pack_referents(*, addr: int, child_addrs: list[int]) -> bytes:
+        return b"".join(
+            (
+                _pack_map(3),
+                #
+                _pack_str(b"t"),
+                _pack_str(b"referents"),
+                #
+                _pack_str(b"addr"),
+                _pack_int(addr),
+                #
+                _pack_str(b"child_addrs"),
+                _pack_array(len(child_addrs)),
+                *(_pack_int(a) for a in child_addrs),
+            )
+        )
 
     def _get_payload(obj: Any) -> bytes | None:
         try:
@@ -73,14 +225,12 @@ def __payload_entrypoint(output_path: str) -> None:
             elif inspect.iscoroutine(obj):
                 payload_str = obj.__qualname__
 
-            if payload_str is not None and payload is None:
+            if payload is None and payload_str is not None:
                 if len(payload_str) <= MAX_PAYLOAD_SIZE:
                     payload = payload_str.encode("utf-8", "replace")
                 else:
                     payload = payload_str[:MAX_PAYLOAD_SIZE].encode("utf-8", "replace")
-                del payload_str
-            if payload is not None and len(payload) > MAX_PAYLOAD_SIZE:
-                payload = payload[:MAX_PAYLOAD_SIZE]
+            del payload_str
         except:  # noqa: E722
             pass
         return payload
@@ -119,66 +269,39 @@ def __payload_entrypoint(output_path: str) -> None:
                         "replace",
                     )
                     output_file.write(
-                        struct.pack(
-                            f"!BQH{len(typename)}s",
-                            RECORD_TYPE,
-                            objtype_addr,
-                            len(typename),
-                            typename,
+                        _pack_type(
+                            objtype_addr=objtype_addr,
+                            typename=typename,
                         )
                     )
                     seentypes.add(objtype)
 
                 size = sys.getsizeof(obj, 0)
                 totalsize += size
-                payload = _get_payload(obj)
-                if payload is not None:
-                    output_file.write(
-                        struct.pack(
-                            f"!B?QQLH{len(payload)}s",
-                            RECORD_OBJECT_WITH_PAYLOAD,
-                            root,
-                            addr,
-                            objtype_addr,
-                            size,
-                            len(payload),
-                            payload,
-                        )
-                    )
-                else:
-                    output_file.write(
-                        struct.pack(
-                            "!B?QQL",
-                            RECORD_OBJECT,
-                            root,
-                            addr,
-                            objtype_addr,
-                            size,
-                        )
-                    )
-
-                # The format is "!BQH{len(referents)}Q"
-                referents = gc.get_referents((obj))
                 output_file.write(
-                    struct.pack(
-                        "!BQH",
-                        RECORD_REFERENTS,
-                        addr,
-                        len(referents),
+                    _pack_object(
+                        root=root,
+                        addr=addr,
+                        objtype_addr=objtype_addr,
+                        size=size,
+                        payload=_get_payload(obj),
                     )
                 )
+
+                referents = gc.get_referents((obj))
+                child_addrs: list[int] = []
                 for child_obj in referents:
                     child_addr = id(child_obj)
-                    output_file.write(
-                        struct.pack(
-                            "Q",
-                            child_addr,
-                        )
-                    )
+                    child_addrs.append(child_addr)
                     queue.append((child_obj, child_addr, False))
+                if child_addrs:
+                    output_file.write(
+                        _pack_referents(addr=addr, child_addrs=child_addrs)
+                    )
                 del referents
+                del child_addrs
 
-            output_file.write(struct.pack("!B", RECORD_DONE))
+            output_file.write(_pack_done())
 
             logging.warning(
                 "XXX: dump_heap: %d / %d (%5.2f MiB)",
