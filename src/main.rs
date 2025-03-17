@@ -202,6 +202,10 @@ where
             )
             .as_bytes(),
     );
+    // We need the payload to be NUL-terminated. mmap(2) will guarantee that the returned region
+    // will be filled with zeroes, but if the trampoline + payload size happens to be page-aligned,
+    // we will segfault unless this extra explicit NUL is added!
+    shellcode.extend(b"\x00");
 
     Ok(shellcode)
 }
