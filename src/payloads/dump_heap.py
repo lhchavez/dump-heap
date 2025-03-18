@@ -8,7 +8,7 @@ def __payload_entrypoint(output_path: str) -> None:
     import sys
     from typing import Any
 
-    MAX_PAYLOAD_SIZE = 128
+    DEFAULT_MAX_PAYLOAD_SIZE = 128
 
     logging.warning("XXX: dump_heap: writing report to %r", output_path)
     logging.warning("XXX: dump_heap: collecting gc")
@@ -179,6 +179,7 @@ def __payload_entrypoint(output_path: str) -> None:
         try:
             payload_str: str | None = None
             payload: bytes | None = None
+            max_payload_size = DEFAULT_MAX_PAYLOAD_SIZE
             if isinstance(obj, str):
                 payload_str = obj
             elif isinstance(obj, dict):
@@ -186,33 +187,43 @@ def __payload_entrypoint(output_path: str) -> None:
                 payload_length = 0
                 for key in obj.keys():
                     if isinstance(key, bytes):
-                        if len(key) > MAX_PAYLOAD_SIZE:
-                            key_bytes = key[:MAX_PAYLOAD_SIZE]
+                        if len(key) > max_payload_size:
+                            key_bytes = key[:max_payload_size]
                         else:
                             key_bytes = key
                     elif isinstance(key, str):
-                        if len(key) > MAX_PAYLOAD_SIZE:
-                            key_bytes = key[:MAX_PAYLOAD_SIZE].encode(
+                        if len(key) > max_payload_size:
+                            key_bytes = key[:max_payload_size].encode(
                                 "utf-8", "replace"
                             )
                         else:
                             key_bytes = key.encode("utf-8", "replace")
                     else:
                         key_str = str(key)
-                        if len(key_str) > MAX_PAYLOAD_SIZE:
-                            key_bytes = key_str[:MAX_PAYLOAD_SIZE].encode(
+                        if len(key_str) > max_payload_size:
+                            key_bytes = key_str[:max_payload_size].encode(
                                 "utf-8", "replace"
                             )
                         else:
                             key_bytes = key_str.encode("utf-8", "replace")
                     payload_entries.append(key_bytes)
                     payload_length += len(key_bytes) + 1
-                    if payload_length > MAX_PAYLOAD_SIZE:
+                    if payload_length > max_payload_size:
                         break
                 payload = b",".join(payload_entries)
                 del payload_entries
             elif isinstance(obj, asyncio.Task):
                 payload_str = obj.get_name()
+            elif isinstance(obj, asyncio.events.Handle):
+                max_payload_size = 4096
+                # The important bits in the stack frames are always towards at
+                # the bottom. So we revert it for simplicity.
+                source_traceback = obj._source_traceback  # type: ignore[attr-defined]
+                payload_str = (
+                    "\n".join(repr(frame) for frame in source_traceback[::-1])
+                    if source_traceback
+                    else repr(obj)
+                )
             elif inspect.ismodule(obj):
                 payload_str = obj.__name__
             elif inspect.isclass(obj):
@@ -226,10 +237,10 @@ def __payload_entrypoint(output_path: str) -> None:
                 payload_str = obj.__qualname__
 
             if payload is None and payload_str is not None:
-                if len(payload_str) <= MAX_PAYLOAD_SIZE:
+                if len(payload_str) <= max_payload_size:
                     payload = payload_str.encode("utf-8", "replace")
                 else:
-                    payload = payload_str[:MAX_PAYLOAD_SIZE].encode("utf-8", "replace")
+                    payload = payload_str[:max_payload_size].encode("utf-8", "replace")
             del payload_str
         except:  # noqa: E722
             pass
