@@ -177,6 +177,9 @@ def _main() -> None:
             elif args.filter not in obj.typename:
                 continue
             queue.append((0, obj))
+        censor_list: list[str] | None = None
+        if args.censor:
+            censor_list = args.censor.split(",")
         while queue:
             depth, obj = queue.pop(0)
             if obj.addr in seen:
@@ -197,9 +200,19 @@ def _main() -> None:
                     payload = f"\\n{obj.payload}"
                 else:
                     payload = f"\\n{obj.payload[:31]}…"
-            print(
-                f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}{payload}"{style}];'
-            )
+            if censor_list:
+                if any(obj.typename.startswith(censored) for censored in censor_list):
+                    print(
+                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n[omitted]\\n{obj.size}"{style}];'
+                    )
+                else:
+                    print(
+                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}"{style}];'
+                    )
+            else:
+                print(
+                    f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}{payload}"{style}];'
+                )
             if excluded_addresses is not None and obj.addr in excluded_addresses:
                 continue
 
@@ -270,6 +283,11 @@ def _main() -> None:
         "--highlight",
         type=str,
         help="Highlight entries by typename.",
+    )
+    parser_graph.add_argument(
+        "--censor",
+        type=str,
+        help="Censor nodes that match a comma-separated list of prefixes of a typename",
     )
     parser_graph.set_defaults(func=_graph)
     args = parser.parse_args()
