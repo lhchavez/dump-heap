@@ -163,6 +163,34 @@ def _main() -> None:
                 int(x.strip("!"), 16) for x in filter_exprs if x.startswith("!")
             )
             addresses = set(int(x, 16) for x in filter_exprs if not x.startswith("!"))
+        highlighted_edges: set[tuple[int, int]] = set()
+        source_addresses: set[int] = (
+            set(int(x.removeprefix("0x"), 16) for x in args.sources.split(","))
+            if args.sources
+            else set()
+        )
+        if source_addresses and addresses:
+            logging.info("computing paths from %r to %r", source_addresses, addresses)
+            source_seen: set[int] = set()
+            source_queue = [(x, [x]) for x in source_addresses]
+            while source_queue:
+                addr, addr_list = source_queue.pop(0)
+                if addr in source_seen:
+                    continue
+                source_seen.add(addr)
+                if addr in addresses:
+                    # We found a path! Add every pair of addresses into the highlighted edges.
+                    logging.info("found path: %r", addr_list)
+                    for i in range(len(addr_list) - 1):
+                        highlighted_edges.add((addr_list[i], addr_list[i + 1]))
+                obj = live_objects.get(addr, None)
+                if obj is None:
+                    continue
+                for next_addr in obj.referents:
+                    if next_addr in source_seen:
+                        continue
+                    source_queue.append((next_addr, addr_list + [next_addr]))
+
         print("digraph heap {")
         print(
             f'  label="Heap visualization of {args.heap_dump}, generated with https://github.com/lhchavez/dump-heap";'
@@ -235,12 +263,20 @@ def _main() -> None:
             }:
                 for addr in obj.referrers:
                     referrer_obj = all_objects[addr]
-                    style = ""
+                    attributes: list[str] = []
                     if addr in seen:
-                        style = " [style=dashed]"
+                        attributes.append("style=dashed")
                     elif len(referrer_obj.referents) == 1:
                         # Marking any single references with bold arrows.
-                        style = " [style=bold]"
+                        attributes.append("style=bold")
+                    if (obj.addr, addr) in highlighted_edges or (
+                        addr,
+                        obj.addr,
+                    ) in highlighted_edges:
+                        attributes.append("color=red")
+                    style = ""
+                    if attributes:
+                        style = f" [{' '.join(attributes)}]"
                     print(f"  x{obj.addr:x} -> x{addr:x}{style};")
                     queue.append((depth + 1, referrer_obj))
         for rank in range(args.max_depth + 1):
@@ -288,6 +324,11 @@ def _main() -> None:
         "--censor",
         type=str,
         help="Censor nodes that match a comma-separated list of prefixes of a typename",
+    )
+    parser_graph.add_argument(
+        "--sources",
+        type=str,
+        help="Comma-separated list of addresses to trace to the target",
     )
     parser_graph.set_defaults(func=_graph)
     args = parser.parse_args()
