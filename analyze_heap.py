@@ -180,6 +180,14 @@ def _main() -> None:
         censor_list: list[str] | None = None
         if args.censor:
             censor_list = args.censor.split(",")
+
+        def _censor(string: str) -> str:
+            if censor_list is None:
+                return string
+            if any(censored.lower() in string.lower() for censored in censor_list):
+                return "[omitted]"
+            return string
+
         while queue:
             depth, obj = queue.pop(0)
             if obj.addr in seen:
@@ -200,19 +208,9 @@ def _main() -> None:
                     payload = f"\\n{obj.payload}"
                 else:
                     payload = f"\\n{obj.payload[:31]}…"
-            if censor_list:
-                if any(obj.typename.startswith(censored) for censored in censor_list):
-                    print(
-                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n[omitted]\\n{obj.size}"{style}];'
-                    )
-                else:
-                    print(
-                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}"{style}];'
-                    )
-            else:
-                print(
-                    f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}{payload}"{style}];'
-                )
+            print(
+                f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{_censor(obj.typename)}\\n{obj.size}\\n{_censor(payload)}"{style}];'
+            )
             if excluded_addresses is not None and obj.addr in excluded_addresses:
                 continue
 
