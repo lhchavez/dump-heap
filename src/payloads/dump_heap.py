@@ -12,7 +12,7 @@ def __payload_entrypoint(output_path: str) -> None:
 
     logging.warning("XXX: dump_heap: writing report to %r", output_path)
     logging.warning("XXX: dump_heap: collecting gc")
-    gc.collect()
+    gc.collect(0)
     gc.collect(1)
     gc.collect(2)
     seen: set[int] = set()
@@ -213,7 +213,15 @@ def __payload_entrypoint(output_path: str) -> None:
                 payload = b",".join(payload_entries)
                 del payload_entries
             elif isinstance(obj, asyncio.Task):
+                max_payload_size = 4096
                 payload_str = obj.get_name()
+                # The important bits in the stack frames are always towards at
+                # the bottom. So we revert it for simplicity.
+                source_traceback = obj._source_traceback  # type: ignore[attr-defined]
+                if source_traceback is not None:
+                    payload_str += "\n" + "\n".join(
+                        repr(frame) for frame in source_traceback[::-1]
+                    )
             elif isinstance(obj, asyncio.events.Handle):
                 max_payload_size = 4096
                 # The important bits in the stack frames are always towards at
