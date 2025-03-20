@@ -2,11 +2,14 @@ import argparse
 import collections
 import dataclasses
 import copy
+import re
 import gzip
 import io
 import logging
 
 import msgpack
+
+_HEX_RE = re.compile(r"^(:?0[xX])?[0-9a-fA-F]+$")
 
 
 @dataclasses.dataclass(order=True)
@@ -151,45 +154,42 @@ def _main() -> None:
     parser_top.add_argument("heap_dump", metavar="heap-dump")
     parser_top.set_defaults(func=_top)
 
+    def _parse_list(s: str) -> tuple[set[int], set[str]]:
+        addresses = set[int]()
+        typenames = set[str]()
+
+        if s:
+            for x in s.split(","):
+                if _HEX_RE.match(x):
+                    addresses.add(int(x.removeprefix("0x"), 16))
+                else:
+                    typenames.add(x)
+
+        return addresses, typenames
+
     def _graph(args: argparse.Namespace) -> None:
-        queue: list[tuple[int, HeapObject]] = []
-        seen: set[int] = set()
+        queue: list[tuple[tuple[int, ...], HeapObject]] = []
         ranks = collections.defaultdict[int, list[int]](list)
-        addresses: set[int] | None = None
-        excluded_addresses: set[int] | None = None
-        if "0x" in args.filter:
-            filter_exprs = args.filter.split(",")
-            excluded_addresses = set(
-                int(x.strip("!"), 16) for x in filter_exprs if x.startswith("!")
-            )
-            addresses = set(int(x, 16) for x in filter_exprs if not x.startswith("!"))
-        highlighted_edges: set[tuple[int, int]] = set()
-        source_addresses: set[int] = (
-            set(int(x.removeprefix("0x"), 16) for x in args.sources.split(","))
-            if args.sources
-            else set()
-        )
-        if source_addresses and addresses:
-            logging.info("computing paths from %r to %r", source_addresses, addresses)
-            source_seen: set[int] = set()
-            source_queue = [(x, [x]) for x in source_addresses]
-            while source_queue:
-                addr, addr_list = source_queue.pop(0)
-                if addr in source_seen:
-                    continue
-                source_seen.add(addr)
-                if addr in addresses:
-                    # We found a path! Add every pair of addresses into the highlighted edges.
-                    logging.info("found path: %r", addr_list)
-                    for i in range(len(addr_list) - 1):
-                        highlighted_edges.add((addr_list[i], addr_list[i + 1]))
-                obj = live_objects.get(addr, None)
-                if obj is None:
-                    continue
-                for next_addr in obj.referents:
-                    if next_addr in source_seen:
-                        continue
-                    source_queue.append((next_addr, addr_list + [next_addr]))
+
+        sink_addresses, sink_typenames = _parse_list(args.sinks)
+        source_addresses, source_typenames = _parse_list(args.sources)
+        exclude_addresses, exclude_typenames = _parse_list(args.exclude)
+        highlight_addresses, highlight_typenames = _parse_list(args.highlight)
+
+        # Censored prefixes work differently.
+        censor_prefixes = args.censor.split(",") if args.censor else None
+
+        for obj in live_objects.values():
+            if obj.typename in sink_typenames:
+                sink_addresses.add(obj.addr)
+            if obj.typename in source_typenames:
+                source_addresses.add(obj.addr)
+            if obj.typename in highlight_typenames:
+                highlight_addresses.add(obj.addr)
+
+            if obj.addr not in sink_addresses or obj.addr in exclude_addresses:
+                continue
+            queue.append(((obj.addr, ), obj))
 
         print("digraph heap {")
         print(
@@ -198,27 +198,24 @@ def _main() -> None:
         print("  rankdir=TB;")
         print("  node [shape=box];")
         print("  edge [dir=back];")
-        for obj in live_objects.values():
-            if addresses is not None and excluded_addresses is not None:
-                if obj.addr not in addresses or obj.addr in excluded_addresses:
-                    continue
-            elif args.filter not in obj.typename:
-                continue
-            queue.append((0, obj))
-        censor_list: list[str] | None = None
-        if args.censor:
-            censor_list = args.censor.split(",")
+        seen: set[int] = set()
+        highlighted_edges: set[tuple[int, int]] = set()
+        edge_attributes: dict[tuple[int, int], list[str]] = {}
         while queue:
-            depth, obj = queue.pop(0)
+            path, obj = queue.pop(0)
             if obj.addr in seen:
                 continue
             seen.add(obj.addr)
-            ranks[depth].append(obj.addr)
+
+            if obj.addr in source_addresses:
+                # We found a path. Add every pair of sink_addresses into the highlighted edges.
+                for i in range(len(path) - 1):
+                    highlighted_edges.add((path[i], path[i + 1]))
 
             style = ""
-            if excluded_addresses is not None and obj.addr in excluded_addresses:
+            if obj.addr in exclude_addresses:
                 style = ",style=filled,fillcolor=gray"
-            elif depth == 0:
+            elif len(path) == 1:
                 style = ",style=filled,fillcolor=red"
             elif args.highlight and args.highlight in obj.typename:
                 style = ",style=filled,fillcolor=yellow"
@@ -228,8 +225,10 @@ def _main() -> None:
                     payload = f"\\n{obj.payload}"
                 else:
                     payload = f"\\n{obj.payload[:31]}…"
-            if censor_list:
-                if any(obj.typename.startswith(censored) for censored in censor_list):
+            if censor_prefixes:
+                if any(
+                    obj.typename.startswith(censored) for censored in censor_prefixes
+                ):
                     print(
                         f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n[omitted]\\n{obj.size}"{style}];'
                     )
@@ -241,12 +240,12 @@ def _main() -> None:
                 print(
                     f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}{payload}"{style}];'
                 )
-            if excluded_addresses is not None and obj.addr in excluded_addresses:
+            if obj.addr in exclude_addresses:
                 continue
 
             if not obj.referrers:
                 continue
-            if depth >= args.max_depth:
+            if len(path) > args.max_depth:
                 print(
                     f'  x{obj.addr:x}_parents [label="...",shape=circle,style=filled,fillcolor=gray];'
                 )
@@ -258,27 +257,31 @@ def _main() -> None:
                 )
                 print(f"  x{obj.addr:x} -> x{obj.addr:x}_parents [style=dotted];")
                 continue
-            if obj.typename not in {
+            if obj.typename in {
                 "builtins.function",
             }:
-                for addr in obj.referrers:
-                    referrer_obj = all_objects[addr]
-                    attributes: list[str] = []
-                    if addr in seen:
-                        attributes.append("style=dashed")
-                    elif len(referrer_obj.referents) == 1:
-                        # Marking any single references with bold arrows.
-                        attributes.append("style=bold")
-                    if (obj.addr, addr) in highlighted_edges or (
-                        addr,
-                        obj.addr,
-                    ) in highlighted_edges:
-                        attributes.append("color=red")
-                    style = ""
-                    if attributes:
-                        style = f" [{' '.join(attributes)}]"
-                    print(f"  x{obj.addr:x} -> x{addr:x}{style};")
-                    queue.append((depth + 1, referrer_obj))
+                continue
+            for addr in obj.referrers:
+                referrer_obj = all_objects[addr]
+                attributes: list[str] = []
+                if addr in seen:
+                    attributes.append("style=dashed")
+                elif len(referrer_obj.referents) == 1:
+                    # Marking any single references with bold arrows.
+                    attributes.append("style=bold")
+                edge_attributes[(obj.addr, addr)] = attributes
+                queue.append((path + (addr,), referrer_obj))
+
+        # Now that we know what edges need highlighting, we can render them all.
+        for (a, b), attributes in edge_attributes.items():
+            style = ""
+            if (a, b) in highlighted_edges or (b, a) in highlighted_edges:
+                attributes.append("color=red")
+            if attributes:
+                style = f" [{' '.join(attributes)}]"
+            print(f"  x{a:x} -> x{b:x}{style};")
+
+        # Finally render all the ranks.
         for rank in range(args.max_depth + 1):
             if rank not in ranks:
                 break
@@ -310,10 +313,20 @@ def _main() -> None:
     )
     parser_graph.add_argument("heap_dump", metavar="heap-dump")
     parser_graph.add_argument(
-        "--filter",
+        "--sinks",
         type=str,
-        help="Filter entries by typename or address",
+        help="Comma-separated list of addresses or typenames to trace ownership of.",
         required=True,
+    )
+    parser_graph.add_argument(
+        "--exclude",
+        type=str,
+        help="Comma-separated list of addresses or typenames to exclude from the graph.",
+    )
+    parser_graph.add_argument(
+        "--sources",
+        type=str,
+        help="Comma-separated list of addresses or typenames to highlight paths to the sinks.",
     )
     parser_graph.add_argument(
         "--highlight",
@@ -324,11 +337,6 @@ def _main() -> None:
         "--censor",
         type=str,
         help="Censor nodes that match a comma-separated list of prefixes of a typename",
-    )
-    parser_graph.add_argument(
-        "--sources",
-        type=str,
-        help="Comma-separated list of addresses to trace to the target",
     )
     parser_graph.set_defaults(func=_graph)
     args = parser.parse_args()

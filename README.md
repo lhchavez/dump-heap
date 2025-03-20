@@ -58,17 +58,18 @@ To get the largest potentially leaked objects among snapshots:
 You can add the `--show-parents` flag to identify what's holding a (transitive)
 reference to the potentially-leaked object, but that is very noisy. If you want
 to visualize that in a nice [Graphviz](https://graphviz.org/)-produced svg, you
-can grab the address of an object you want to focus on (say,
-`0x00005d4bbffe2100`), a few objects you want to exclude (because they have
-just too many references, `!0x7967b8ed0fe0,!0x7967eff3ad80,!0x7967e7cca000`,
-for example), and specify an optional type to highlight (`asyncio.Task` is
-useful in async contexts, since task leaks are surprising and often contribute
-a lot):
+can grab the address or typename of an object you want to focus on (say,
+`0x00005d4bbffe2100`), a few objects / typenames you want to exclude (because
+they have just too many references,
+`0x7967b8ed0fe0,0x7967eff3ad80,0x7967e7cca000`, for example), and specify an
+optional type to highlight (`asyncio.Task` is useful in async contexts, since
+task leaks are surprising and often contribute a lot):
 
 ```shell
 ~/debug-heap$ uv run analyze_heap.py \
     graph \
-    --filter='0x00005d4bbffe2100,!0x7967b8ed0fe0,!0x7967eff3ad80,!0x7967e7cca000' \
+    --sinks='0x00005d4bbffe2100' \
+    --exclude='0x7967b8ed0fe0,0x7967eff3ad80,0x7967e7cca000' \
     --highlight='asyncio.Task' \
     --max-depth=30 \
     ~/heap.after.bin.gz | \
