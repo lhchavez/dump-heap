@@ -2,6 +2,7 @@ import argparse
 import collections
 import dataclasses
 import copy
+import json
 import re
 import gzip
 import io
@@ -46,7 +47,9 @@ def _scanheap(filename: str, populate_referrers: bool = True) -> dict[int, HeapO
                 payload_bytes = record.get("payload", None)
                 payload: str | None = None
                 if payload_bytes is not None:
-                    payload = payload_bytes.decode("utf-8", "replace")
+                    payload = json.dumps(payload_bytes.decode("utf-8", "replace"))[1:][
+                        :-1
+                    ]
                 live_objects[record["addr"]] = HeapObject(
                     addr=record["addr"],
                     typename=typenames[record["objtype_addr"]],
@@ -189,7 +192,7 @@ def _main() -> None:
 
             if obj.addr not in sink_addresses or obj.addr in exclude_addresses:
                 continue
-            queue.append(((obj.addr, ), obj))
+            queue.append(((obj.addr,), obj))
 
         print("digraph heap {")
         print(
