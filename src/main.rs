@@ -4,6 +4,7 @@ extern crate scopeguard;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::fs;
+use std::io;
 use std::io::IoSlice;
 use std::num::NonZeroUsize;
 use std::os::unix::fs::FileExt;
@@ -15,7 +16,9 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use clap::Parser;
 use elf::endian::AnyEndian;
 use elf::ElfStream;
-use log::{debug, info};
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use log::{debug, info, warn};
 use nix::sys::mman::{MapFlags, ProtFlags};
 use nix::sys::ptrace;
 use nix::sys::signal::Signal;
@@ -532,12 +535,36 @@ fn main() -> Result<()> {
     let args = Args::parse();
     env_logger::init();
 
-    let done_path = run_python(Pid::from_raw(args.pid), &args.output, args.payload.as_ref())
+    let output_path = args
+        .output
+        .as_path()
+        .to_str()
+        .map(|s| s.to_string())
+        .unwrap();
+    let (output_path, gzip) = match &output_path.strip_suffix(".gz") {
+        Some(output_path) => (PathBuf::from(output_path), true),
+        None => (args.output.clone(), false),
+    };
+
+    let done_path = run_python(Pid::from_raw(args.pid), &output_path, args.payload.as_ref())
         .context("run_python")?;
 
     info!("injected code, waiting for result...");
 
     wait_for_result(&done_path, args.timeout)?;
+
+    if gzip {
+        let output = fs::File::create(&args.output)
+            .with_context(|| format!("open {:#?} for writing", &args.output))?;
+        let mut input = fs::File::open(&output_path)
+            .with_context(|| format!("open {:#?} for reading", output_path))?;
+        let mut encoder = GzEncoder::new(output, Compression::default());
+        io::copy(&mut input, &mut encoder).context("compress output")?;
+        encoder.finish().context("finish compressing output")?;
+        if let Err(err) = fs::remove_file(&output_path) {
+            warn!("delete {output_path:#?}: {err:#?}");
+        }
+    }
 
     info!("wrote dump to {:#?}", args.output);
 
@@ -586,6 +613,7 @@ mod tests {
             .expect("Failed to write exit");
         let read = stdout.read(&mut buf).expect("Failed to read stdout");
         assert_eq!(&buf[..read], b"1\n");
+        child.wait().expect("Failed to wait for python");
 
         let result = Command::new("uv")
             .arg("run")
@@ -597,15 +625,11 @@ mod tests {
             .expect("Failed to execute analyze_heap.py");
         assert!(result.status.success());
         let expected = b"helloworldhelloworld";
-        if let None = result
-            .stdout
-            .windows(expected.len())
-            .position(|s| s == expected)
-        {
-            assert!(
-                false,
+        if !result.stdout.windows(expected.len()).any(|s| s == expected) {
+            panic!(
                 "{:#?} did not contain {:#?}",
-                String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(expected),
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(expected),
             );
         }
     }
