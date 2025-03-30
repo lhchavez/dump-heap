@@ -3,10 +3,16 @@ import collections
 import dataclasses
 import copy
 import json
+import http.server
 import re
 import gzip
 import io
+import os.path
+import subprocess
 import logging
+import sys
+import urllib.parse
+from typing import IO, cast
 
 import msgpack
 
@@ -157,7 +163,7 @@ def _main() -> None:
     parser_top.add_argument("heap_dump", metavar="heap-dump")
     parser_top.set_defaults(func=_top)
 
-    def _parse_list(s: str) -> tuple[set[int], set[str]]:
+    def _parse_list(s: str | None) -> tuple[set[int], set[str]]:
         addresses = set[int]()
         typenames = set[str]()
 
@@ -170,17 +176,27 @@ def _main() -> None:
 
         return addresses, typenames
 
-    def _graph(args: argparse.Namespace) -> None:
+    def _render_graph(
+        output: IO[bytes],
+        heap_dump: str,
+        sinks: str,
+        sources: str | None,
+        exclude: str | None,
+        highlight: str | None,
+        censor: str | None,
+        max_depth: int,
+        max_breadth: int,
+    ) -> None:
         queue: list[tuple[tuple[int, ...], HeapObject]] = []
         ranks = collections.defaultdict[int, list[int]](list)
 
-        sink_addresses, sink_typenames = _parse_list(args.sinks)
-        source_addresses, source_typenames = _parse_list(args.sources)
-        exclude_addresses, exclude_typenames = _parse_list(args.exclude)
-        highlight_addresses, highlight_typenames = _parse_list(args.highlight)
+        sink_addresses, sink_typenames = _parse_list(sinks)
+        source_addresses, source_typenames = _parse_list(sources)
+        exclude_addresses, _exclude_typenames = _parse_list(exclude)
+        highlight_addresses, highlight_typenames = _parse_list(highlight)
 
         # Censored prefixes work differently.
-        censor_prefixes = args.censor.split(",") if args.censor else None
+        censor_prefixes = censor.split(",") if censor else None
 
         for obj in live_objects.values():
             if obj.typename in sink_typenames:
@@ -194,13 +210,15 @@ def _main() -> None:
                 continue
             queue.append(((obj.addr,), obj))
 
-        print("digraph heap {")
-        print(
-            f'  label="Heap visualization of {args.heap_dump}, generated with https://github.com/lhchavez/dump-heap";'
+        output.write("digraph heap {\n".encode("utf-8"))
+        output.write(
+            f'  label="Heap visualization of {heap_dump}, generated with https://github.com/lhchavez/dump-heap";\n'.encode(
+                "utf-8"
+            )
         )
-        print("  rankdir=TB;")
-        print("  node [shape=box];")
-        print("  edge [dir=back];")
+        output.write("  rankdir=TB;\n".encode("utf-8"))
+        output.write("  node [shape=box];\n".encode("utf-8"))
+        output.write("  edge [dir=back];\n".encode("utf-8"))
         seen: set[int] = set()
         highlighted_edges: set[tuple[int, int]] = set()
         edge_attributes: dict[tuple[int, int], list[str]] = {}
@@ -220,7 +238,7 @@ def _main() -> None:
                 style = ",style=filled,fillcolor=gray"
             elif len(path) == 1:
                 style = ",style=filled,fillcolor=red"
-            elif args.highlight and args.highlight in obj.typename:
+            elif highlight and highlight in obj.typename:
                 style = ",style=filled,fillcolor=yellow"
             payload = ""
             if obj.payload is not None:
@@ -232,33 +250,51 @@ def _main() -> None:
                 if any(
                     obj.typename.startswith(censored) for censored in censor_prefixes
                 ):
-                    print(
-                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n[omitted]\\n{obj.size}"{style}];'
+                    output.write(
+                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n[omitted]\\n{obj.size}"{style}];\n'.encode(
+                            "utf-8"
+                        )
                     )
                 else:
-                    print(
-                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}"{style}];'
+                    output.write(
+                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}"{style}];\n'.encode(
+                            "utf-8"
+                        )
                     )
             else:
-                print(
-                    f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}{payload}"{style}];'
+                output.write(
+                    f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}{payload}"{style}];\n'.encode(
+                        "utf-8"
+                    )
                 )
             if obj.addr in exclude_addresses:
                 continue
 
             if not obj.referrers:
                 continue
-            if len(path) > args.max_depth:
-                print(
-                    f'  x{obj.addr:x}_parents [label="...",shape=circle,style=filled,fillcolor=gray];'
+            if len(path) > max_depth:
+                output.write(
+                    f'  x{obj.addr:x}_parents [label="...",shape=circle,style=filled,fillcolor=gray];\n'.encode(
+                        "utf-8"
+                    )
                 )
-                print(f"  x{obj.addr:x} -> x{obj.addr:x}_parents [style=dotted];")
+                output.write(
+                    f"  x{obj.addr:x} -> x{obj.addr:x}_parents [style=dotted];\n".encode(
+                        "utf-8"
+                    )
+                )
                 continue
-            if obj.referrers and len(obj.referrers) >= args.max_breadth:
-                print(
-                    f'  x{obj.addr:x}_parents [label="...{len(obj.referrers)}...",shape=oval,style=filled,fillcolor=gray];'
+            if obj.referrers and len(obj.referrers) >= max_breadth:
+                output.write(
+                    f'  x{obj.addr:x}_parents [label="...{len(obj.referrers)}...",shape=oval,style=filled,fillcolor=gray];\n'.encode(
+                        "utf-8"
+                    )
                 )
-                print(f"  x{obj.addr:x} -> x{obj.addr:x}_parents [style=dotted];")
+                output.write(
+                    f"  x{obj.addr:x} -> x{obj.addr:x}_parents [style=dotted];\n".encode(
+                        "utf-8"
+                    )
+                )
                 continue
             if obj.typename in {
                 "builtins.function",
@@ -282,26 +318,119 @@ def _main() -> None:
                 attributes.append("color=red")
             if attributes:
                 style = f" [{' '.join(attributes)}]"
-            print(f"  x{a:x} -> x{b:x}{style};")
+            output.write(f"  x{a:x} -> x{b:x}{style};\n".encode("utf-8"))
 
         # Finally render all the ranks.
-        for rank in range(args.max_depth + 1):
+        for rank in range(max_depth + 1):
             if rank not in ranks:
                 break
             addrs = ranks[rank]
-            print(
-                "  { rank="
-                + ("source" if rank == 0 else "same")
-                + "; "
-                + "; ".join(f"x{addr:x}" for addr in addrs)
-                + "; };"
+            output.write(
+                (
+                    "  { rank="
+                    + ("source" if rank == 0 else "same")
+                    + "; "
+                    + "; ".join(f"x{addr:x}" for addr in addrs)
+                    + "; };\n"
+                ).encode("utf-8")
             )
-        print("}")
-        pass
+        output.write("}\n".encode("utf-8"))
+
+    def _graph(args: argparse.Namespace) -> None:
+        if args.output and (
+            args.output.endswith(".svg") or args.output.endswith(".pdf")
+        ):
+            _, ext = os.path.splitext(args.output)
+            with subprocess.Popen(
+                ["dot", f"-T{ext[1:]}", f"-o{args.output}"],
+                stdin=subprocess.PIPE,
+            ) as p:
+                assert p.stdin
+                _render_graph(
+                    output=p.stdin,
+                    heap_dump=args.heap_dump,
+                    sinks=args.sinks,
+                    sources=args.sources,
+                    exclude=args.exclude,
+                    highlight=args.highlight,
+                    censor=args.censor,
+                    max_depth=args.max_depth,
+                    max_breadth=args.max_breadth,
+                )
+        else:
+            _render_graph(
+                output=sys.stdout.buffer,
+                heap_dump=args.heap_dump,
+                sinks=args.sinks,
+                sources=args.sources,
+                exclude=args.exclude,
+                highlight=args.highlight,
+                censor=args.censor,
+                max_depth=args.max_depth,
+                max_breadth=args.max_breadth,
+            )
+
+    def _server(args: argparse.Namespace) -> None:
+        class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                """Handle GET requests"""
+                path = urllib.parse.urlparse(self.path)
+                query = urllib.parse.parse_qs(path.query)
+
+                def _q(name: str) -> str | None:
+                    if name not in query:
+                        return None
+                    if len(query[name]) == 0:
+                        return None
+                    return query[name][0]
+
+                def _qi(name: str) -> int | None:
+                    if name not in query:
+                        return None
+                    if len(query[name]) == 0:
+                        return None
+                    return int(query[name][0])
+
+                if path.path == "/":
+                    self.send_response(200, "OK")
+                    self.send_header("Content-Type", "text/html")
+                    self.end_headers()
+                    with open("analyze_heap.html", "rb") as f:
+                        self.wfile.write(f.read())
+                elif path.path == "/heap-dump.svg":
+                    self.send_response(200, "OK")
+                    self.send_header("Content-Type", "image/svg+xml")
+                    self.end_headers()
+
+                    with subprocess.Popen(
+                        ["dot", "-Tsvg"],
+                        stdin=subprocess.PIPE,
+                        stdout=cast(IO[bytes], self.wfile),
+                    ) as p:
+                        assert p.stdin
+                        _render_graph(
+                            output=p.stdin,
+                            heap_dump=args.heap_dump,
+                            sinks=_q("sinks") or "",
+                            sources=_q("sources"),
+                            exclude=_q("exclude"),
+                            highlight=_q("highlight"),
+                            censor=_q("censor"),
+                            max_depth=_qi("max_depth") or 20,
+                            max_breadth=_qi("max_breadth") or 20,
+                        )
+                else:
+                    self.send_response(404, "Not Found")
+                    self.end_headers()
+
+        httpd = http.server.HTTPServer(("", args.port), HTTPRequestHandler)
+        logging.info("web server started at http://localhost:%d", args.port)
+        httpd.serve_forever()
 
     parser_graph = subparsers.add_parser(
         "graph", help="Create a graphviz graph centered on specific types"
     )
+    parser_graph.add_argument("heap_dump", metavar="heap-dump")
     parser_graph.add_argument(
         "--max-depth",
         default=1,
@@ -314,7 +443,6 @@ def _main() -> None:
         type=int,
         help="The maximum number of nodes to expand when traversing parents / children.",
     )
-    parser_graph.add_argument("heap_dump", metavar="heap-dump")
     parser_graph.add_argument(
         "--sinks",
         type=str,
@@ -341,7 +469,24 @@ def _main() -> None:
         type=str,
         help="Censor nodes that match a comma-separated list of prefixes of a typename",
     )
+    parser_graph.add_argument(
+        "--output",
+        type=str,
+        help="Write the result to a file. If extension is .svg or .pdf, graphviz will be used",
+    )
     parser_graph.set_defaults(func=_graph)
+
+    parser_server = subparsers.add_parser(
+        "server", help="Create an http server that can do repeated graphviz renderings"
+    )
+    parser_server.add_argument("heap_dump", metavar="heap-dump")
+    parser_server.add_argument(
+        "--port",
+        type=int,
+        default=7118,
+        help="Port in which to listen to HTTP requests",
+    )
+    parser_server.set_defaults(func=_server)
     args = parser.parse_args()
 
     all_objects = _scanheap(args.heap_dump)
