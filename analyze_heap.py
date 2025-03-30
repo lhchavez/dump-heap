@@ -26,6 +26,7 @@ class HeapObject:
     addr: int
     typename: str
     root: bool
+    thread_root: bool
     children_size_exclusive: int = 0
     # Pointers from this object to other objects.
     referents: set[int] = dataclasses.field(default_factory=set)
@@ -61,6 +62,7 @@ def _scanheap(filename: str, populate_referrers: bool = True) -> dict[int, HeapO
                     typename=typenames[record["objtype_addr"]],
                     size=record["size"],
                     root=record["root"],
+                    thread_root=record.get("thread_root", False),
                     payload=payload,
                 )
             elif record["t"] == "referents":
@@ -109,7 +111,11 @@ def _main() -> None:
             print(
                 f"- {obj.size:8d} {obj.addr:016x} {obj.typename} "
                 + (repr(obj.payload) if obj.payload is not None else "")
-                + (" (root)" if obj.root else ""),
+                + (
+                    " (root)"
+                    if obj.root
+                    else (" (thread root)" if obj.thread_root else "")
+                ),
             )
             if args.show_parents:
                 seen = set()
@@ -126,7 +132,11 @@ def _main() -> None:
                             else ""
                         )
                         + (" (cycle)" if addr in seen else "")
-                        + (" (root)" if child_obj.root else ""),
+                        + (
+                            " (root)"
+                            if child_obj.root
+                            else (" (thread root)" if child_obj.thread_root else "")
+                        ),
                     )
                     if addr in seen:
                         continue
@@ -235,35 +245,40 @@ def _main() -> None:
 
             style = ""
             if obj.addr in exclude_addresses:
-                style = ",style=filled,fillcolor=gray"
+                style += ",style=filled,fillcolor=gray"
             elif len(path) == 1:
-                style = ",style=filled,fillcolor=red"
+                style += ",style=filled,fillcolor=red"
             elif highlight and highlight in obj.typename:
-                style = ",style=filled,fillcolor=yellow"
+                style += ",style=filled,fillcolor=yellow"
             payload = ""
             if obj.payload is not None:
                 if len(payload) <= 32:
                     payload = f"\\n{obj.payload}"
                 else:
                     payload = f"\\n{obj.payload[:31]}…"
+            label = f"0x{obj.addr:x}"
+            if obj.root:
+                label += " (gcroot)"
+            elif obj.thread_root:
+                label += " (thread root)"
             if censor_prefixes:
                 if any(
                     obj.typename.startswith(censored) for censored in censor_prefixes
                 ):
                     output.write(
-                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n[omitted]\\n{obj.size}"{style}];\n'.encode(
+                        f'  x{obj.addr:x} [label="{label}\\n[omitted]\\n{obj.size}"{style}];\n'.encode(
                             "utf-8"
                         )
                     )
                 else:
                     output.write(
-                        f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}"{style}];\n'.encode(
+                        f'  x{obj.addr:x} [label="{label}\\n{obj.typename}\\n{obj.size}"{style}];\n'.encode(
                             "utf-8"
                         )
                     )
             else:
                 output.write(
-                    f'  x{obj.addr:x} [label="0x{obj.addr:x}\\n{obj.typename}\\n{obj.size}{payload}"{style}];\n'.encode(
+                    f'  x{obj.addr:x} [label="{label}\\n{obj.typename}\\n{obj.size}{payload}"{style}];\n'.encode(
                         "utf-8"
                     )
                 )

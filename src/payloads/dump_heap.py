@@ -6,6 +6,7 @@ def __payload_entrypoint(output_path: str) -> None:
     import gc
     import struct
     import sys
+    import threading
     from typing import Any
 
     DEFAULT_MAX_PAYLOAD_SIZE = 128
@@ -110,18 +111,27 @@ def __payload_entrypoint(output_path: str) -> None:
         )
 
     def _pack_object(
-        *, root: bool, addr: int, objtype_addr: int, size: int, payload: bytes | None
+        *,
+        root: bool,
+        thread_root: bool,
+        addr: int,
+        objtype_addr: int,
+        size: int,
+        payload: bytes | None,
     ) -> bytes:
         if payload:
             return b"".join(
                 (
-                    _pack_map(6),
+                    _pack_map(7),
                     #
                     _pack_str(b"t"),
                     _pack_str(b"object"),
                     #
                     _pack_str(b"root"),
                     _pack_bool(root),
+                    #
+                    _pack_str(b"thread_root"),
+                    _pack_bool(thread_root),
                     #
                     _pack_str(b"objtype_addr"),
                     _pack_int(objtype_addr),
@@ -139,13 +149,16 @@ def __payload_entrypoint(output_path: str) -> None:
         else:
             return b"".join(
                 (
-                    _pack_map(5),
+                    _pack_map(6),
                     #
                     _pack_str(b"t"),
                     _pack_str(b"object"),
                     #
                     _pack_str(b"root"),
                     _pack_bool(root),
+                    #
+                    _pack_str(b"thread_root"),
+                    _pack_bool(thread_root),
                     #
                     _pack_str(b"objtype_addr"),
                     _pack_int(objtype_addr),
@@ -232,6 +245,8 @@ def __payload_entrypoint(output_path: str) -> None:
                     if source_traceback
                     else repr(obj)
                 )
+            elif inspect.isframe(obj):
+                payload_str = f"{obj.f_code.co_qualname} at {obj.f_code.co_filename}:{obj.f_lineno}"
             elif inspect.ismodule(obj):
                 payload_str = obj.__name__
             elif inspect.isclass(obj):
@@ -256,9 +271,16 @@ def __payload_entrypoint(output_path: str) -> None:
 
     try:
         with open(output_path, "wb") as output_file:
-            queue: list[tuple[Any, int, bool]] = [
-                (o, id(o), True) for o in gc.get_objects()
+            # Add all the gc-known objects into the heap dump.
+            queue: list[tuple[Any, int, bool, bool]] = [
+                (o, id(o), True, False) for o in gc.get_objects()
             ]
+            # Now also add all the thread-local frames, excluding the one from this method.
+            current_thread_id = threading.current_thread().ident
+            for thread_id, frame in sys._current_frames().items():
+                if current_thread_id == thread_id:
+                    continue
+                queue.append((frame, id(frame), False, True))
             x = 0
             totalsize = 0
 
@@ -272,7 +294,7 @@ def __payload_entrypoint(output_path: str) -> None:
                     )
                 x += 1
 
-                obj, addr, root = queue.pop()
+                obj, addr, gcroot, thread_root = queue.pop()
                 if addr in ignored_addrs:
                     # We don't want to track the objects we own.
                     continue
@@ -299,7 +321,8 @@ def __payload_entrypoint(output_path: str) -> None:
                 totalsize += size
                 output_file.write(
                     _pack_object(
-                        root=root,
+                        root=gcroot,
+                        thread_root=thread_root,
                         addr=addr,
                         objtype_addr=objtype_addr,
                         size=size,
@@ -312,7 +335,7 @@ def __payload_entrypoint(output_path: str) -> None:
                 for child_obj in referents:
                     child_addr = id(child_obj)
                     child_addrs.append(child_addr)
-                    queue.append((child_obj, child_addr, False))
+                    queue.append((child_obj, child_addr, False, False))
                 if child_addrs:
                     output_file.write(
                         _pack_referents(addr=addr, child_addrs=child_addrs)
