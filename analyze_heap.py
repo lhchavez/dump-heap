@@ -202,7 +202,7 @@ def _main() -> None:
 
         sink_addresses, sink_typenames = _parse_list(sinks)
         source_addresses, source_typenames = _parse_list(sources)
-        exclude_addresses, _exclude_typenames = _parse_list(exclude)
+        exclude_addresses, exclude_typenames = _parse_list(exclude)
         highlight_addresses, highlight_typenames = _parse_list(highlight)
 
         # Censored prefixes work differently.
@@ -213,6 +213,8 @@ def _main() -> None:
                 sink_addresses.add(obj.addr)
             if obj.typename in source_typenames:
                 source_addresses.add(obj.addr)
+            if obj.typename in exclude_typenames:
+                exclude_addresses.add(obj.addr)
             if obj.typename in highlight_typenames:
                 highlight_addresses.add(obj.addr)
 
