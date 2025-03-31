@@ -72,8 +72,17 @@ task leaks are surprising and often contribute a lot):
     --exclude='0x7967b8ed0fe0,0x7967eff3ad80,0x7967e7cca000' \
     --highlight='asyncio.Task' \
     --max-depth=30 \
-    ~/heap.after.bin.gz | \
-  dot -o ~/graph.svg -Tsvg
+    --output ~/graph.svg \
+    ~/heap.after.bin.gz
+```
+
+Or start a more interactive exploration with an HTTP server (all fields accept
+the same parameters as the `graph` subcommand).
+
+```shell
+~/debug-heap$ uv run analyze_heap.py \
+    server \
+    ~/heap.after.bin.gz
 ```
 
 Hopefully that will shed some light to why the leak is happening and how to fix
