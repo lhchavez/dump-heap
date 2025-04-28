@@ -26,13 +26,12 @@ target process:
 
 ```shell
 curl -sSL \
-  https://github.com/lhchavez/dump-heap/releases/download/v0.1.2/dump-heap \
+  https://github.com/lhchavez/dump-heap/releases/download/v0.1.10/dump-heap \
   -o dump-heap && \
 chmod +x dump-heap && \
 sudo ./dump-heap \
-  --output=/tmp/heap.bin \
-  $(pidof python) && \
-gzip /tmp/heap.bin
+  --output=/tmp/heap.bin.gz \
+  $(pidof python)
 ```
 
 Save the heap somewhere, wait several minutes / hours, and run it again. Then
