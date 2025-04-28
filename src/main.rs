@@ -18,7 +18,7 @@ use elf::endian::AnyEndian;
 use elf::ElfStream;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use log::{debug, info, warn};
+use log::{debug, info};
 use nix::sys::mman::{MapFlags, ProtFlags};
 use nix::sys::ptrace;
 use nix::sys::signal::Signal;
@@ -27,6 +27,7 @@ use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::Pid;
 use procmaps::{self, Mappings};
 use serde::Serialize;
+use tempfile::TempDir;
 use tinytemplate::TinyTemplate;
 use uuid::Uuid;
 
@@ -169,7 +170,6 @@ where
     P3: AsRef<Path> + std::fmt::Debug,
     std::path::PathBuf: std::convert::From<P1>,
     std::path::PathBuf: std::convert::From<P2>,
-    std::path::PathBuf: std::convert::From<P3>,
 {
     let mut shellcode = Vec::<u8>::new();
     shellcode.extend(RUN_PYTHON_PAYLOAD);
@@ -415,17 +415,36 @@ fn run_python_shellcode(
     Ok(())
 }
 
-fn run_python<P1, P2>(pid: Pid, output_path: P1, payload_path: Option<P2>) -> Result<PathBuf>
-where
-    P1: AsRef<Path> + std::fmt::Debug,
-    P2: AsRef<Path> + std::fmt::Debug,
-    std::path::PathBuf: std::convert::From<P1>,
-    std::path::PathBuf: std::convert::From<P2>,
-{
-    let run_id = Uuid::new_v4();
-    let done_path = PathBuf::from(format!("/tmp/dump-heap-done-{}-{}", pid, run_id));
+#[allow(dead_code)]
+struct RunPythonResult {
+    namespaced_temp_dir: TempDir,
+    namespaced_output_path: PathBuf,
+    namespaced_done_path: PathBuf,
+    output_path: PathBuf,
+    done_path: PathBuf,
+}
 
-    let shellcode = build_shellcode(&run_id, &done_path, output_path, payload_path)
+fn run_python<P>(pid: Pid, payload_path: Option<P>) -> Result<RunPythonResult>
+where
+    P: AsRef<Path> + std::fmt::Debug,
+{
+    // Create a temporary directory, and let the caller read it even from outside the container.
+    let namespaced_root = PathBuf::from(format!("/proc/{}/root", pid));
+    let namespaced_temp_dir =
+        TempDir::with_prefix_in("dump-heap-", namespaced_root.join("tmp")).context("TempDir")?;
+    let run_id = Uuid::new_v4();
+    let namespaced_done_path = namespaced_temp_dir.path().join("done");
+    let namespaced_output_path = namespaced_temp_dir.path().join("output");
+    let temp_dir = PathBuf::from("/").join(
+        namespaced_temp_dir
+            .path()
+            .strip_prefix(&namespaced_root)
+            .context("get temp_dir")?,
+    );
+    let done_path = temp_dir.join("done");
+    let output_path = temp_dir.join("output");
+
+    let shellcode = build_shellcode(&run_id, &done_path, &output_path, payload_path)
         .context("build shellcode")?;
 
     // Before we do anything with the process, let's ensure that we can find all the symbols.
@@ -513,20 +532,28 @@ where
     )
     .context("tracee_munmap")?;
 
-    Ok(done_path)
+    Ok(RunPythonResult {
+        namespaced_temp_dir,
+        namespaced_done_path,
+        namespaced_output_path,
+        done_path,
+        output_path,
+    })
 }
 
-fn wait_for_result(done_path: &PathBuf, timeout: Duration) -> Result<()> {
+fn wait_for_result(run_python_result: &RunPythonResult, timeout: Duration) -> Result<()> {
     let now = Instant::now();
-    while !done_path.exists() {
+    while !run_python_result.namespaced_done_path.exists() {
         if now.elapsed() < timeout {
             info!("waiting...");
             sleep(Duration::from_secs(1));
         } else {
-            bail!("timed out waiting for {:#?}", done_path);
+            bail!(
+                "timed out waiting for {:#?}",
+                run_python_result.namespaced_done_path
+            );
         }
     }
-    fs::remove_file(done_path)?;
 
     Ok(())
 }
@@ -541,29 +568,29 @@ fn main() -> Result<()> {
         .to_str()
         .map(|s| s.to_string())
         .unwrap();
-    let (output_path, gzip) = match &output_path.strip_suffix(".gz") {
-        Some(output_path) => (PathBuf::from(output_path), true),
-        None => (args.output.clone(), false),
-    };
 
-    let done_path = run_python(Pid::from_raw(args.pid), &output_path, args.payload.as_ref())
-        .context("run_python")?;
+    let run_python_result =
+        run_python(Pid::from_raw(args.pid), args.payload.as_ref()).context("run_python")?;
 
     info!("injected code, waiting for result...");
 
-    wait_for_result(&done_path, args.timeout)?;
+    wait_for_result(&run_python_result, args.timeout)?;
 
-    if gzip {
-        let output = fs::File::create(&args.output)
-            .with_context(|| format!("open {:#?} for writing", &args.output))?;
-        let mut input = fs::File::open(&output_path)
-            .with_context(|| format!("open {:#?} for reading", output_path))?;
+    let mut output = fs::File::create(&args.output)
+        .with_context(|| format!("open {:#?} for writing", &args.output))?;
+    let mut input =
+        fs::File::open(&run_python_result.namespaced_output_path).with_context(|| {
+            format!(
+                "open {:#?} for reading",
+                run_python_result.namespaced_output_path
+            )
+        })?;
+    if output_path.ends_with(".gz") {
         let mut encoder = GzEncoder::new(output, Compression::default());
         io::copy(&mut input, &mut encoder).context("compress output")?;
         encoder.finish().context("finish compressing output")?;
-        if let Err(err) = fs::remove_file(&output_path) {
-            warn!("delete {output_path:#?}: {err:#?}");
-        }
+    } else {
+        io::copy(&mut input, &mut output).context("compress output")?;
     }
 
     info!("wrote dump to {:#?}", args.output);
@@ -577,12 +604,11 @@ mod tests {
 
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
-    use tempfile::TempDir;
 
     #[test]
     fn it_works() {
-        let tmp_dir =
-            TempDir::with_prefix("dump-heap-").expect("Failed to create temporary directory");
+        env_logger::init();
+
         let mut child = Command::new("python")
             .arg("-i")
             .stdin(Stdio::piped())
@@ -600,14 +626,10 @@ mod tests {
         let read = stdout.read(&mut buf).expect("Failed to read stdout");
         assert_eq!(&buf[..read], b"0\n");
 
-        let output_path: PathBuf = tmp_dir.path().join("output.bin");
-        let done_path = run_python(
-            Pid::from_raw(child.id() as i32),
-            &output_path,
-            None::<PathBuf>,
-        )
-        .expect("Failed to run_python");
-        wait_for_result(&done_path, Duration::from_secs(5)).expect("Failed to wait for result");
+        let run_python_result = run_python(Pid::from_raw(child.id() as i32), None::<PathBuf>)
+            .expect("Failed to run_python");
+        wait_for_result(&run_python_result, Duration::from_secs(5))
+            .expect("Failed to wait for result");
         stdin
             .write_all(b"print(1)\nexit()\n")
             .expect("Failed to write exit");
@@ -619,7 +641,7 @@ mod tests {
             .arg("run")
             .arg("analyze_heap.py")
             .arg("top")
-            .arg(output_path)
+            .arg(run_python_result.output_path)
             .stderr(Stdio::inherit())
             .output()
             .expect("Failed to execute analyze_heap.py");
