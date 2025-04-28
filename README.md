@@ -26,7 +26,7 @@ target process:
 
 ```shell
 curl -sSL \
-  https://github.com/lhchavez/dump-heap/releases/download/v0.1.10/dump-heap \
+  https://github.com/lhchavez/dump-heap/releases/download/v0.1.11/dump-heap \
   -o dump-heap && \
 chmod +x dump-heap && \
 sudo ./dump-heap \

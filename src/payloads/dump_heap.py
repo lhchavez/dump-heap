@@ -1,4 +1,7 @@
-def __payload_entrypoint(output_path: str) -> None:
+from typing import Any
+
+
+def __payload_entrypoint(output_path: str, event_loop: Any | None) -> None:
     import asyncio
     import asyncio.events
     import inspect
@@ -10,6 +13,8 @@ def __payload_entrypoint(output_path: str) -> None:
     from typing import Any
 
     DEFAULT_MAX_PAYLOAD_SIZE = 128
+
+    del event_loop
 
     logging.warning("XXX: dump_heap: writing report to %r", output_path)
     logging.warning("XXX: dump_heap: collecting gc")
